@@ -236,17 +236,20 @@ options {
     // DNS over TCP
     tcp-listen-queue 100;
     
+    // DNSSEC
+    dnssec-validation auto;
+    
     // Logging
     version "Resolvix DNS Server";
     
-    // Statistics
+    // Statistics file (rndc stats command)
     statistics-file "/var/cache/bind/named.stats";
     zone-statistics yes;
-    
-    // Statistics HTTP server
-    statistics-channels {
-        inet 127.0.0.1 port 8053 allow { 127.0.0.1; };
-    };
+};
+
+// Statistics channels for HTTP access (XML/JSON)
+statistics-channels {
+    inet 127.0.0.1 port 8053;
 };
 
 // Logging configuration
@@ -369,13 +372,11 @@ setup_dashboard_service() {
     local current_user="${SUDO_USER:-$USER}"
     
     # Criar usuário para o serviço se não existir
-    if ! id "resolvix" &>/dev/null; then
-        useradd -r -s /bin/false -d /var/lib/resolvix resolvix
-        info "Usuário resolvix criado para o serviço"
-    fi
+    # Não é necessário criar usuário separado, usaremos o usuário atual
+    # O serviço systemd será executado com o usuário que instalou o sistema
     
-    # Ajustar permissões
-    chown -R resolvix:resolvix "$dashboard_path"
+    # Ajustar permissões para o usuário atual
+    chown -R $USER:$USER "$dashboard_path"
     
     cat > "$service_file" << EOF
 [Unit]
@@ -386,8 +387,8 @@ Requires=bind9.service
 
 [Service]
 Type=simple
-User=resolvix
-Group=resolvix
+User=$USER
+Group=$USER
 WorkingDirectory=$dashboard_path
 Environment=PATH=$dashboard_path/venv/bin
 ExecStart=$dashboard_path/venv/bin/python $dashboard_path/app.py
