@@ -17,6 +17,7 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
+GRAY='\033[0;90m'
 NC='\033[0m'
 
 # Variáveis globais
@@ -126,18 +127,37 @@ install_dependencies() {
     local distro=$(detect_distro)
     
     info "Detectada distribuição: $distro"
+    
+    # Verificar conectividade com a internet
+    if ! ping -c 1 8.8.8.8 &> /dev/null; then
+        error "Sem conectividade com a internet. Verifique sua conexão."
+        exit 1
+    fi
+    
     info "Instalando dependências..."
     
     case $distro in
         ubuntu|debian)
-            apt-get update
-            apt-get install -y bind9 bind9-utils bind9-doc python3 python3-pip python3-venv curl bind9-dnsutils bc lsof
+            if ! apt-get update; then
+                error "Falha ao atualizar repositórios"
+                exit 1
+            fi
+            if ! apt-get install -y bind9 bind9-utils bind9-doc python3 python3-pip python3-venv curl bind9-dnsutils bc lsof; then
+                error "Falha ao instalar dependências"
+                exit 1
+            fi
             ;;
         centos|rhel|fedora)
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y bind bind-utils python3 python3-pip curl bc lsof
+                if ! dnf install -y bind bind-utils python3 python3-pip curl bc lsof; then
+                    error "Falha ao instalar dependências"
+                    exit 1
+                fi
             else
-                yum install -y bind bind-utils python3 python3-pip curl bc lsof
+                if ! yum install -y bind bind-utils python3 python3-pip curl bc lsof; then
+                    error "Falha ao instalar dependências"
+                    exit 1
+                fi
             fi
             ;;
         *)
@@ -222,6 +242,11 @@ options {
     // Statistics
     statistics-file "/var/cache/bind/named.stats";
     zone-statistics yes;
+    
+    // Statistics HTTP server
+    statistics-channels {
+        inet 127.0.0.1 port 8053 allow { 127.0.0.1; };
+    };
 };
 
 // Logging configuration
@@ -303,6 +328,16 @@ setup_dashboard() {
     
     cd "$DASHBOARD_DIR"
     
+    # Verificar se requirements.txt existe
+    if [[ ! -f "requirements.txt" ]]; then
+        warning "Arquivo requirements.txt não encontrado, criando um básico..."
+        cat > requirements.txt << 'EOF'
+Flask==2.3.3
+psutil==5.9.5
+requests==2.31.0
+EOF
+    fi
+    
     # Criar ambiente virtual se não existir
     if [[ ! -d "venv" ]]; then
         info "Criando ambiente virtual Python..."
@@ -312,7 +347,12 @@ setup_dashboard() {
     # Ativar ambiente virtual e instalar dependências
     source venv/bin/activate
     pip install --upgrade pip
-    pip install -r requirements.txt
+    if pip install -r requirements.txt; then
+        success "Dependências do dashboard instaladas com sucesso"
+    else
+        error "Falha ao instalar dependências do dashboard"
+        return 1
+    fi
     
     success "Dashboard configurado com sucesso"
     cd "$SCRIPT_DIR"
@@ -326,6 +366,16 @@ setup_dashboard_service() {
     
     local service_file="/etc/systemd/system/resolvix-dashboard.service"
     local dashboard_path="$DASHBOARD_DIR"
+    local current_user="${SUDO_USER:-$USER}"
+    
+    # Criar usuário para o serviço se não existir
+    if ! id "resolvix" &>/dev/null; then
+        useradd -r -s /bin/false -d /var/lib/resolvix resolvix
+        info "Usuário resolvix criado para o serviço"
+    fi
+    
+    # Ajustar permissões
+    chown -R resolvix:resolvix "$dashboard_path"
     
     cat > "$service_file" << EOF
 [Unit]
@@ -336,12 +386,15 @@ Requires=bind9.service
 
 [Service]
 Type=simple
-User=root
+User=resolvix
+Group=resolvix
 WorkingDirectory=$dashboard_path
 Environment=PATH=$dashboard_path/venv/bin
 ExecStart=$dashboard_path/venv/bin/python $dashboard_path/app.py
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -359,19 +412,41 @@ install_system() {
     log "Iniciando instalação do Resolvix DNS Server..."
     
     check_root
+    
+    # Verificar se já está instalado
+    if systemctl is-active --quiet bind9 && systemctl is-active --quiet resolvix-dashboard; then
+        warning "Sistema já parece estar instalado e rodando."
+        read -p "Deseja reinstalar? (y/N): " -r
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            info "Instalação cancelada."
+            exit 0
+        fi
+    fi
+    
     install_dependencies
     generate_bind_config
     
     # Configurar BIND9
     systemctl enable bind9 2>/dev/null || true
-    systemctl restart bind9
+    if ! systemctl restart bind9; then
+        error "Falha ao iniciar BIND9. Verifique os logs."
+        exit 1
+    fi
     
     # Configurar dashboard
-    setup_dashboard
+    if ! setup_dashboard; then
+        error "Falha ao configurar dashboard"
+        exit 1
+    fi
+    
     setup_dashboard_service
     
     # Iniciar serviços
-    systemctl start resolvix-dashboard
+    if ! systemctl start resolvix-dashboard; then
+        warning "Falha ao iniciar dashboard. Tentando novamente..."
+        sleep 3
+        systemctl start resolvix-dashboard || true
+    fi
     
     # Teste final
     sleep 5
@@ -389,6 +464,12 @@ install_system() {
         echo "  - Teste: $0 test"
     else
         error "Falha na instalação. Verifique os logs."
+        echo ""
+        info "Para diagnóstico:"
+        echo "  - systemctl status bind9"
+        echo "  - systemctl status resolvix-dashboard"
+        echo "  - journalctl -u bind9 -n 20"
+        echo "  - journalctl -u resolvix-dashboard -n 20"
         exit 1
     fi
 }
@@ -488,6 +569,7 @@ manage_dashboard() {
         "start")
             info "Iniciando dashboard..."
             if [[ -d "$DASHBOARD_DIR" ]]; then
+                check_root
                 systemctl start resolvix-dashboard
                 success "Dashboard iniciado"
                 info "Acesse: http://127.0.0.1:5000"
@@ -497,6 +579,7 @@ manage_dashboard() {
             ;;
         "stop")
             info "Parando dashboard..."
+            check_root
             systemctl stop resolvix-dashboard
             success "Dashboard parado"
             ;;
@@ -506,10 +589,26 @@ manage_dashboard() {
         "logs")
             journalctl -u resolvix-dashboard -f
             ;;
+        "status")
+            if systemctl is-active --quiet resolvix-dashboard; then
+                success "Dashboard está rodando"
+                info "URL: http://127.0.0.1:5000"
+            else
+                warning "Dashboard não está rodando"
+            fi
+            ;;
+        "restart")
+            info "Reiniciando dashboard..."
+            check_root
+            systemctl restart resolvix-dashboard
+            success "Dashboard reiniciado"
+            ;;
         *)
             echo -e "${YELLOW}Opções do dashboard:${NC}"
             echo "  start   - Iniciar dashboard"
             echo "  stop    - Parar dashboard"
+            echo "  restart - Reiniciar dashboard"
+            echo "  status  - Verificar status"
             echo "  service - Configurar como serviço"
             echo "  logs    - Ver logs"
             ;;
@@ -596,6 +695,13 @@ uninstall_system() {
                 fi
                 ;;
         esac
+    fi
+    
+    # Remover usuário do serviço
+    if id "resolvix" &>/dev/null; then
+        info "Removendo usuário resolvix..."
+        userdel resolvix 2>/dev/null || true
+        rm -rf /var/lib/resolvix 2>/dev/null || true
     fi
     
     # Limpeza final
@@ -719,9 +825,15 @@ main() {
             ;;
         "benchmark")
             if [[ -f "$SCRIPT_DIR/dns_stress_test.sh" ]]; then
-                "$SCRIPT_DIR/dns_stress_test.sh" --benchmark
+                if [[ -x "$SCRIPT_DIR/dns_stress_test.sh" ]]; then
+                    "$SCRIPT_DIR/dns_stress_test.sh" "$@"
+                else
+                    chmod +x "$SCRIPT_DIR/dns_stress_test.sh"
+                    "$SCRIPT_DIR/dns_stress_test.sh" "$@"
+                fi
             else
-                error "Script de benchmark não encontrado"
+                error "Script de benchmark não encontrado: $SCRIPT_DIR/dns_stress_test.sh"
+                info "Verifique se o arquivo existe e tem permissões de execução"
             fi
             ;;
         "help"|"--help"|"-h"|"")

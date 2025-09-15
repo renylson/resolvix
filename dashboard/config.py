@@ -15,7 +15,7 @@ class Config:
     
     # Dashboard settings
     HOST = os.environ.get('DASHBOARD_HOST') or '0.0.0.0'
-    PORT = int(os.environ.get('DASHBOARD_PORT') or 8080)
+    PORT = int(os.environ.get('DASHBOARD_PORT') or 5000)
     DEBUG = os.environ.get('FLASK_DEBUG', '0').lower() in ['1', 'true', 'yes']
     
     # Update interval (seconds)

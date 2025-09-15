@@ -231,6 +231,22 @@ def api_health():
         'timestamp': datetime.now().isoformat()
     })
 
+@app.route('/api')
+def api_info():
+    """Endpoint principal da API - lista endpoints disponíveis"""
+    return jsonify({
+        'name': 'Resolvix Dashboard API',
+        'version': '2.0.0',
+        'description': 'API para monitoramento do servidor DNS BIND9',
+        'endpoints': {
+            '/api': 'Informações da API',
+            '/api/health': 'Status de saúde do serviço',
+            '/api/stats': 'Estatísticas completas do DNS',
+            '/api/metrics': 'Métricas calculadas'
+        },
+        'timestamp': datetime.now().isoformat()
+    })
+
 @app.route('/api/metrics')
 def api_metrics():
     """Endpoint específico para métricas calculadas"""
@@ -240,65 +256,6 @@ def api_metrics():
     with cache_lock:
         return jsonify(stats_cache.get('metrics', {}))
 
-if __name__ == '__main__':
-    # Carrega estatísticas iniciais
-    update_stats()
-    
-    # Inicia servidor Flask
-    app.run(host='0.0.0.0', port=5000, debug=True)
-# Configuração para produção
-if __name__ == '__main__':
-    import os
-    import sys
-    
-    # Adiciona diretório atual ao path
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    
-    try:
-        from config import config
-        env = os.environ.get('FLASK_ENV', 'production')
-        app_config = config.get(env, config['default'])
-        
-        app.config.from_object(app_config)
-        
-        # Configuração de logging para produção
-        if not app.debug:
-            import logging
-            from logging.handlers import RotatingFileHandler
-            
-            if not os.path.exists('/var/log'):
-                os.makedirs('/var/log', exist_ok=True)
-            
-            handler = RotatingFileHandler(
-                '/var/log/resolvix-dashboard.log',
-                maxBytes=10 * 1024 * 1024,  # 10MB
-                backupCount=5
-            )
-            handler.setFormatter(logging.Formatter(
-                '%(asctime)s %(levelname)s: %(message)s'
-            ))
-            handler.setLevel(logging.INFO)
-            app.logger.addHandler(handler)
-            app.logger.setLevel(logging.INFO)
-            app.logger.info('Resolvix Dashboard startup')
-        
-        # Atualiza estatísticas iniciais
-        update_stats()
-        
-        # Inicia servidor
-        app.run(
-            host=app_config.HOST,
-            port=app_config.PORT,
-            debug=app_config.DEBUG,
-            threaded=True
-        )
-        
-    except ImportError:
-        # Fallback para configuração original
-        update_stats()
-        app.run(host='0.0.0.0', port=5000, debug=False)
-
-# Configuração para produção
 if __name__ == '__main__':
     import os
     import sys
