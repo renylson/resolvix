@@ -100,6 +100,7 @@ graph TB
 ```bash
 git clone https://github.com/renylson/resolvix.git
 cd resolvix
+chmod +x resolvix.sh
 sudo ./resolvix.sh install
 ```
 
