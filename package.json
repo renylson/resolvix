@@ -1,0 +1,48 @@
+{
+  "name": "resolvix",
+  "version": "1.0.0",
+  "description": "Servidor DNS Recursivo de Alta Performance baseado em BIND9",
+  "author": {
+    "name": "Renylson Marques",
+    "email": "renylsonm@gmail.com",
+    "github": "https://github.com/renylson"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/renylson/resolvix.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dns",
+    "bind9",
+    "recursivo",
+    "alta-performance",
+    "servidor",
+    "rede"
+  ],
+  "scripts": {
+    "install": "./install.sh",
+    "status": "./status.sh",
+    "uninstall": "./uninstall.sh"
+  },
+  "requirements": {
+    "os": ["linux"],
+    "packages": ["bind9", "dig", "systemctl"],
+    "privileges": "root"
+  },
+  "features": [
+    "Resolução DNS recursiva de alta performance",
+    "ACL personalizada com suporte dinâmico a blocos IP",
+    "Sem redirecionamento - resolução direta nos servidores raiz",
+    "Sistema completo de logs e monitoramento",
+    "Otimizações do sistema para cargas DNS",
+    "Suporte à validação DNSSEC",
+    "Servidor de estatísticas para monitoramento de performance"
+  ],
+  "performance": {
+    "concurrent_clients": 10000,
+    "tcp_clients": 1000,
+    "cache_size": "512MB",
+    "supported_qps": "50000+"
+  }
+}
