@@ -18,6 +18,8 @@
 
 O **Resolvix** é um servidor DNS recursivo de alta performance baseado em BIND9, desenvolvido para ambientes que exigem:
 
+![Screenshot](Screenshot_1.jpg)
+
 🔧 **Alta Performance e Confiabilidade**
 - Suporte a mais de 50.000 consultas por segundo
 - Latência sub-5ms para consultas em cache
