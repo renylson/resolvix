@@ -255,7 +255,7 @@ statistics-channels {
 // Logging configuration
 logging {
     channel bind_log {
-        file "/var/log/bind/bind.log" versions 3 size 5m;
+        file "/var/log/named/bind.log" versions 3 size 5m;
         severity info;
         print-category yes;
         print-severity yes;
@@ -308,8 +308,8 @@ acl "blackhole" {
 EOF
 
     # Criar diretório de logs
-    mkdir -p /var/log/bind
-    chown bind:bind /var/log/bind
+    mkdir -p /var/log/named
+    chown bind:bind /var/log/named
     
     # Verificar configuração
     if named-checkconf; then
