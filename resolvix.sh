@@ -1,17 +1,10 @@
 #!/bin/bash
 
 #######################################################
-# Resolvix - Sistema Unificado de DNS Management
+# Resolvix 
 # Autor: Renylson Marques <renylsonm@gmail.com>
 # GitHub: https://github.com/renylson/resolvix
 # Versão: 2.0.0
-# 
-# Script unificado que combina todas as funcionalidades:
-# - Instalação e configuração do BIND9
-# - Dashboard web com monitoramento
-# - Gerenciamento de serviços
-# - Status e diagnósticos
-# - Desinstalação completa
 #######################################################
 
 set -e
@@ -138,13 +131,13 @@ install_dependencies() {
     case $distro in
         ubuntu|debian)
             apt-get update
-            apt-get install -y bind9 bind9utils bind9-doc python3 python3-pip python3-venv curl dig dnsutils
+            apt-get install -y bind9 bind9-utils bind9-doc python3 python3-pip python3-venv curl bind9-dnsutils bc lsof
             ;;
         centos|rhel|fedora)
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y bind bind-utils python3 python3-pip curl
+                dnf install -y bind bind-utils python3 python3-pip curl bc lsof
             else
-                yum install -y bind bind-utils python3 python3-pip curl
+                yum install -y bind bind-utils python3 python3-pip curl bc lsof
             fi
             ;;
         *)
@@ -229,11 +222,6 @@ options {
     // Statistics
     statistics-file "/var/cache/bind/named.stats";
     zone-statistics yes;
-    
-    // Canal de estatísticas
-    statistics-channels {
-        inet 127.0.0.1 port 8053 allow { 127.0.0.1; };
-    };
 };
 
 // Logging configuration
@@ -375,7 +363,7 @@ install_system() {
     generate_bind_config
     
     # Configurar BIND9
-    systemctl enable bind9
+    systemctl enable bind9 2>/dev/null || true
     systemctl restart bind9
     
     # Configurar dashboard
@@ -546,12 +534,29 @@ uninstall_system() {
     info "Removendo Resolvix DNS Server..."
     
     # Parar e desabilitar serviços
+    info "Parando serviços..."
     systemctl stop resolvix-dashboard 2>/dev/null || true
     systemctl disable resolvix-dashboard 2>/dev/null || true
     systemctl stop bind9 2>/dev/null || true
+    systemctl stop named 2>/dev/null || true
     systemctl disable bind9 2>/dev/null || true
+    systemctl disable named 2>/dev/null || true
+    
+    # Matar processos que possam estar usando as portas
+    info "Liberando portas em uso..."
+    pkill -f "python.*app.py" 2>/dev/null || true
+    pkill -f "named" 2>/dev/null || true
+    sleep 2
+    
+    # Forçar liberação da porta 5000 se necessário
+    local port_5000_pid=$(lsof -ti:5000 2>/dev/null || true)
+    if [[ -n "$port_5000_pid" ]]; then
+        kill -9 $port_5000_pid 2>/dev/null || true
+        warning "Processo na porta 5000 foi terminado forçadamente"
+    fi
     
     # Remover arquivos de serviço
+    info "Removendo serviços do systemd..."
     rm -f /etc/systemd/system/resolvix-dashboard.service
     systemctl daemon-reload
     
@@ -564,26 +569,48 @@ uninstall_system() {
         info "Backup das configurações salvo em: $backup_dir"
     fi
     
+    # Remover diretórios de configuração e cache
+    info "Removendo diretórios de configuração..."
+    rm -rf /etc/bind /var/cache/bind /var/log/bind
+    
+    # Remover ambiente virtual do dashboard
+    info "Removendo ambiente virtual do dashboard..."
+    rm -rf "$DASHBOARD_DIR/venv"
+    
     # Remover pacotes (opcional)
+    echo ""
     read -p "Remover também o BIND9 e dependências? (y/N): " -r
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+        info "Removendo pacotes do BIND9..."
         local distro=$(detect_distro)
         case $distro in
             ubuntu|debian)
-                apt-get remove --purge -y bind9 bind9utils bind9-doc
+                apt-get remove --purge -y bind9 bind9-utils bind9-doc bind9-libs bind9-dnsutils bind9-host 2>/dev/null || true
+                apt-get autoremove -y 2>/dev/null || true
                 ;;
             centos|rhel|fedora)
                 if command -v dnf >/dev/null 2>&1; then
-                    dnf remove -y bind bind-utils
+                    dnf remove -y bind bind-utils 2>/dev/null || true
                 else
-                    yum remove -y bind bind-utils
+                    yum remove -y bind bind-utils 2>/dev/null || true
                 fi
                 ;;
         esac
     fi
     
+    # Limpeza final
+    info "Fazendo limpeza final..."
+    systemctl daemon-reload
+    
+    # Verificar se as portas foram liberadas
+    if ss -tlnp | grep -q ":53\|:5000"; then
+        warning "Algumas portas ainda podem estar em uso. Reinicie o sistema se necessário."
+    fi
+    
     success "Resolvix DNS Server removido com sucesso"
     info "Backup salvo em: $backup_dir"
+    echo ""
+    info "Para uma limpeza completa, considere reiniciar o sistema."
 }
 
 # Monitor em tempo real
