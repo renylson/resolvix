@@ -57,7 +57,12 @@ show_help() {
     echo -e "${YELLOW}  restart${NC}         Reiniciar serviços"
     echo -e "${YELLOW}  test${NC}            Testar DNS"
     echo -e "${YELLOW}  logs${NC}            Ver logs"
-    echo -e "${YELLOW}  dashboard${NC}       Gerenciar dashboard"
+    echo -e "${YELLOW}  dashboard${NC}       Gerenciar dashboard (start|stop|restart|status|logs|password)"
+    echo ""
+    echo -e "${CYAN}EXEMPLOS:${NC}"
+    echo -e "  $0 install                 # Instalar sistema"
+    echo -e "  $0 dashboard password      # Alterar senha do dashboard"
+    echo -e "  $0 dashboard status        # Status do dashboard"
 }
 
 check_root() {
@@ -281,10 +286,10 @@ EOF
 setup_admin_credentials() {
     info "Configurando credenciais do administrador..."
     
-    if [[ -f "$DASHBOARD_DIR/data/credentials.json" ]]; then
-        warning "Credenciais já configuradas"
-        read -p "Reconfigurar? (y/N): " -r
-        [[ ! $REPLY =~ ^[Yy]$ ]] && return 0
+    # Limpar dados existentes durante instalação
+    if [[ -d "$DASHBOARD_DIR/data" ]]; then
+        info "Limpando credenciais existentes..."
+        rm -rf "$DASHBOARD_DIR/data"
     fi
     
     echo ""
@@ -332,6 +337,70 @@ else:
     print('ERROR: ' + message)
     sys.exit(1)
 " && success "Usuário criado: $admin_username" || { error "Falha ao criar usuário"; return 1; }
+    
+    cd "$SCRIPT_DIR"
+}
+
+reconfigure_admin_credentials() {
+    info "Reconfigurando credenciais do administrador..."
+    
+    if [[ -f "$DASHBOARD_DIR/data/credentials.json" ]]; then
+        warning "Credenciais já configuradas"
+        read -p "Reconfigurar? (y/N): " -r
+        [[ ! $REPLY =~ ^[Yy]$ ]] && return 0
+        
+        info "Removendo credenciais existentes..."
+        rm -rf "$DASHBOARD_DIR/data"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}=== Configuração do Administrador ===${NC}"
+    
+    while true; do
+        read -p "Nome de usuário [admin]: " admin_username
+        admin_username=${admin_username:-admin}
+        [[ "$admin_username" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]] && break
+        echo -e "${RED}Nome inválido (apenas letras, números, _ ou -)${NC}"
+    done
+    
+    while true; do
+        echo ""
+        echo -e "${YELLOW}Senha deve ter 8+ caracteres com maiúscula, minúscula, número e símbolo${NC}"
+        read -s -p "Senha: " admin_password
+        echo ""
+        read -s -p "Confirme: " admin_password_confirm
+        echo ""
+        
+        [[ "$admin_password" != "$admin_password_confirm" ]] && { echo -e "${RED}Senhas não coincidem${NC}"; continue; }
+        [[ ${#admin_password} -lt 8 ]] && { echo -e "${RED}Muito curta${NC}"; continue; }
+        [[ ! "$admin_password" =~ [A-Z] ]] && { echo -e "${RED}Falta maiúscula${NC}"; continue; }
+        [[ ! "$admin_password" =~ [a-z] ]] && { echo -e "${RED}Falta minúscula${NC}"; continue; }
+        [[ ! "$admin_password" =~ [0-9] ]] && { echo -e "${RED}Falta número${NC}"; continue; }
+        [[ ! "$admin_password" =~ [^a-zA-Z0-9] ]] && { echo -e "${RED}Falta símbolo${NC}"; continue; }
+        break
+    done
+    
+    mkdir -p "$DASHBOARD_DIR/data"
+    chmod 700 "$DASHBOARD_DIR/data"
+    
+    cd "$DASHBOARD_DIR"
+    source venv/bin/activate
+    
+    python3 -c "
+import sys
+sys.path.append('.')
+from auth import auth_manager
+
+success, message = auth_manager.create_admin_user('$admin_username', '$admin_password')
+if success:
+    print('SUCCESS: ' + message)
+else:
+    print('ERROR: ' + message)
+    sys.exit(1)
+" && success "Usuário criado: $admin_username" || { error "Falha ao criar usuário"; return 1; }
+    
+    # Reiniciar dashboard para aplicar mudanças
+    systemctl restart resolvix-dashboard 2>/dev/null || true
     
     cd "$SCRIPT_DIR"
 }
@@ -468,8 +537,9 @@ manage_dashboard() {
                 warning "Dashboard parado"
             fi ;;
         "logs") journalctl -u resolvix-dashboard -f ;;
+        "password"|"passwd") reconfigure_admin_credentials ;;
         *) 
-            echo -e "${YELLOW}Opções: start|stop|restart|status|logs${NC}" ;;
+            echo -e "${YELLOW}Opções: start|stop|restart|status|logs|password${NC}" ;;
     esac
 }
 
