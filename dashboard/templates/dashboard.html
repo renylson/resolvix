@@ -431,9 +431,43 @@
                         <p>Monitoramento em Tempo Real</p>
                     </div>
                 </div>
-                <div id="server-status" class="status-indicator status-offline">
-                    <i class="fas fa-circle"></i>
-                    <span>Conectando...</span>
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <a href="/acl-management" style="
+                        background: #059669; 
+                        color: white; 
+                        padding: 8px 16px; 
+                        border-radius: 8px; 
+                        text-decoration: none; 
+                        font-weight: 600; 
+                        font-size: 0.9rem;
+                        transition: all 0.3s ease;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                    " onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+                        <i class="fas fa-shield-alt"></i>
+                        Gestão ACLs
+                    </a>
+                    <a href="/logout" style="
+                        background: #dc2626; 
+                        color: white; 
+                        padding: 8px 16px; 
+                        border-radius: 8px; 
+                        text-decoration: none; 
+                        font-weight: 600; 
+                        font-size: 0.9rem;
+                        transition: all 0.3s ease;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                    " onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+                        <i class="fas fa-sign-out-alt"></i>
+                        Sair
+                    </a>
+                    <div id="server-status" class="status-indicator status-offline">
+                        <i class="fas fa-circle"></i>
+                        <span>Conectando...</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -696,19 +730,19 @@
         function updateKPICards(data) {
             const kpiGrid = document.getElementById('kpi-grid');
             const metrics = data.metrics || {};
-            const json = data.json || {};
+            const stats = data.stats || {};
             
             const kpis = [
                 {
                     title: 'Total de Consultas',
-                    value: (json.opcodes?.QUERY || 0).toLocaleString(),
+                    value: (stats.queries?.total_queries || 0).toLocaleString(),
                     icon: 'fas fa-search',
                     color: 'bg-primary',
                     subtitle: 'Consultas DNS processadas'
                 },
                 {
                     title: 'QPS Médio',
-                    value: metrics.qps || '0',
+                    value: metrics.queries_per_second || '0',
                     icon: 'fas fa-tachometer-alt',
                     color: 'bg-success',
                     subtitle: 'Consultas por segundo'
@@ -721,25 +755,39 @@
                     subtitle: 'Respostas bem-sucedidas'
                 },
                 {
-                    title: 'Cache Hit Ratio',
-                    value: `${metrics.cache_hit_ratio || 0}%`,
+                    title: 'Cache Hit Rate',
+                    value: `${metrics.cache_hit_rate || 0}%`,
                     icon: 'fas fa-database',
                     color: 'bg-warning',
                     subtitle: 'Eficiência do cache'
                 },
                 {
                     title: 'Uptime',
-                    value: metrics.uptime?.formatted || 'N/A',
+                    value: metrics.uptime_formatted || 'N/A',
                     icon: 'fas fa-clock',
                     color: 'bg-primary',
                     subtitle: 'Tempo online'
                 },
                 {
-                    title: 'Uso de Memória',
-                    value: `${data.xml?.memory?.inuse_mb || 0} MB`,
+                    title: 'Uso de Memória Cache',
+                    value: `${stats.memory?.cache_memory_mb || 0} MB`,
                     icon: 'fas fa-memory',
                     color: 'bg-warning',
-                    subtitle: 'Memória em uso'
+                    subtitle: 'Memória do cache'
+                },
+                {
+                    title: 'Consultas Recursivas',
+                    value: `${metrics.recursion_rate || 0}%`,
+                    icon: 'fas fa-route',
+                    color: 'bg-info',
+                    subtitle: 'Taxa de recursão'
+                },
+                {
+                    title: 'DNSSEC Válido',
+                    value: `${metrics.dnssec_validation_rate || 0}%`,
+                    icon: 'fas fa-shield-alt',
+                    color: 'bg-success',
+                    subtitle: 'Validação DNSSEC'
                 }
             ];
 
@@ -758,38 +806,34 @@
         }
 
         function updateCharts(data) {
-            const json = data.json || {};
+            const stats = data.stats || {};
             
             // Query Types Chart
-            if (json.qtypes) {
-                const qtypes = Object.entries(json.qtypes);
+            if (stats.queries?.qtypes) {
+                const qtypes = Object.entries(stats.queries.qtypes);
                 charts.queryTypes.data.labels = qtypes.map(([type]) => type);
                 charts.queryTypes.data.datasets[0].data = qtypes.map(([, count]) => count);
                 charts.queryTypes.update();
             }
 
             // Response Codes Chart
-            if (json.rcodes) {
-                const rcodes = Object.entries(json.rcodes).filter(([, count]) => count > 0);
+            if (stats.queries?.rcodes) {
+                const rcodes = Object.entries(stats.queries.rcodes).filter(([, count]) => count > 0);
                 charts.responseCodes.data.labels = rcodes.map(([code]) => code);
                 charts.responseCodes.data.datasets[0].data = rcodes.map(([, count]) => count);
                 charts.responseCodes.update();
             }
 
-            // Protocol Chart
-            if (data.metrics?.protocol_distribution) {
-                const proto = data.metrics.protocol_distribution;
-                charts.protocol.data.datasets[0].data = [proto.udp_percent, proto.tcp_percent];
+            // Protocol Chart (UDP vs TCP)
+            const metrics = data.metrics || {};
+            if (metrics.udp_percentage !== undefined && metrics.tcp_percentage !== undefined) {
+                charts.protocol.data.datasets[0].data = [metrics.udp_percentage, metrics.tcp_percentage];
                 charts.protocol.update();
             }
 
             // Cache Chart
-            if (json.views?._default?.resolver?.cachestats) {
-                const cache = json.views._default.resolver.cachestats;
-                charts.cache.data.datasets[0].data = [
-                    cache.CacheHits || 0,
-                    cache.CacheMisses || 0
-                ];
+            if (stats.cache?.hits && stats.cache?.misses) {
+                charts.cache.data.datasets[0].data = [stats.cache.hits, stats.cache.misses];
                 charts.cache.update();
             }
         }
@@ -801,18 +845,20 @@
 
         function updateServerStatsTable(data) {
             const tbody = document.getElementById('server-stats-body');
-            const json = data.json || {};
+            const stats_data = data.stats || {};
             const metrics = data.metrics || {};
             
             const stats = [
-                ['Versão do BIND', json.version || 'N/A', 'Versão do servidor DNS'],
-                ['Consultas UDP', (json.nsstats?.QryUDP || 0).toLocaleString(), 'Consultas via protocolo UDP'],
-                ['Consultas TCP', (json.nsstats?.QryTCP || 0).toLocaleString(), 'Consultas via protocolo TCP'],
-                ['Respostas NOERROR', (json.rcodes?.NOERROR || 0).toLocaleString(), 'Respostas bem-sucedidas'],
-                ['Respostas NXDOMAIN', (json.rcodes?.NXDOMAIN || 0).toLocaleString(), 'Domínios não encontrados'],
-                ['SERVFAIL', (json.rcodes?.SERVFAIL || 0).toLocaleString(), 'Falhas do servidor'],
-                ['Recursão Ativa', json.nsstats?.RecursHighwater || 0, 'Consultas recursivas ativas'],
-                ['Cache Nodes', json.views?._default?.resolver?.cachestats?.CacheNodes || 0, 'Nós no cache']
+                ['Versão do BIND', stats_data.server_info?.version || 'N/A', 'Versão do servidor DNS'],
+                ['Consultas UDP', (metrics.udp_percentage ? `${metrics.udp_percentage}%` : 'N/A'), 'Proporção de consultas UDP'],
+                ['Consultas TCP', (metrics.tcp_percentage ? `${metrics.tcp_percentage}%` : 'N/A'), 'Proporção de consultas TCP'],
+                ['Respostas NOERROR', (stats_data.queries?.noerror || 0).toLocaleString(), 'Respostas bem-sucedidas'],
+                ['Respostas NXDOMAIN', (stats_data.queries?.nxdomain || 0).toLocaleString(), 'Domínios não encontrados'],
+                ['SERVFAIL', (stats_data.queries?.servfail || 0).toLocaleString(), 'Falhas do servidor'],
+                ['Taxa de Sucesso', `${metrics.success_rate || 0}%`, 'Porcentagem de respostas bem-sucedidas'],
+                ['Cache Nodes', stats_data.cache?.nodes || 0, 'Nós ativos no cache'],
+                ['Validação DNSSEC', `${metrics.dnssec_validation_rate || 0}%`, 'Taxa de validação DNSSEC'],
+                ['Taxa de Recursão', `${metrics.recursion_rate || 0}%`, 'Consultas que necessitaram recursão']
             ];
 
             tbody.innerHTML = stats.map(([metric, value, desc]) => `
@@ -826,29 +872,24 @@
 
         function updateCacheStatsTable(data) {
             const tbody = document.getElementById('cache-stats-body');
-            const cache = data.json?.views?._default?.resolver?.cache || {};
+            const cache = data.stats?.cache || {};
+            const qtypes = data.stats?.queries?.qtypes || {};
             
-            const cacheStats = Object.entries(cache).map(([type, count]) => {
-                const isNegative = type.startsWith('!');
-                const cleanType = isNegative ? type.substring(1) : type;
-                return [cleanType, isNegative ? 0 : count, isNegative ? count : 0];
-            });
+            // Mostrar estatísticas de cache mais relevantes
+            const cacheStats = [
+                ['Cache Hits', (cache.hits || 0).toLocaleString(), 'Consultas atendidas pelo cache'],
+                ['Cache Misses', (cache.misses || 0).toLocaleString(), 'Consultas que precisaram resolver'],
+                ['Query Hits', (cache.query_hits || 0).toLocaleString(), 'Hits de consulta específicos'],
+                ['Query Misses', (cache.query_misses || 0).toLocaleString(), 'Misses de consulta específicos'],
+                ['Total RRsets', (cache.total_rrsets || 0).toLocaleString(), 'Total de RRsets em cache'],
+                ['Memória Cache', `${cache.tree_mem ? (cache.tree_mem / (1024*1024)).toFixed(1) : 0} MB`, 'Memória usada pelo cache']
+            ];
 
-            // Agrupa por tipo
-            const grouped = {};
-            cacheStats.forEach(([type, positive, negative]) => {
-                if (!grouped[type]) {
-                    grouped[type] = { positive: 0, negative: 0 };
-                }
-                grouped[type].positive += positive;
-                grouped[type].negative += negative;
-            });
-
-            tbody.innerHTML = Object.entries(grouped).map(([type, counts]) => `
+            tbody.innerHTML = cacheStats.map(([metric, value, desc]) => `
                 <tr>
-                    <td><strong>${type}</strong></td>
-                    <td>${counts.positive.toLocaleString()}</td>
-                    <td>${counts.negative.toLocaleString()}</td>
+                    <td><strong>${metric}</strong></td>
+                    <td>${value}</td>
+                    <td>${desc}</td>
                 </tr>
             `).join('');
         }
