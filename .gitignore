@@ -1,1 +1,29 @@
+# Python
 dashboard/__pycache__/
+dashboard/venv/
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Arquivos sensíveis de configuração
+dashboard/data/credentials.json
+dashboard/data/credentials.json.bak
+dashboard/data/audit.log
+dashboard/server.log
+dashboard/cookies.txt
+
+# Logs
+*.log
+
+# Arquivos temporários
+*.tmp
+*.temp
+
+# Configurações locais
+.env
+.env.local
+
+# Backups
+*.backup
+*.bak

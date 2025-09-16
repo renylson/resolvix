@@ -384,7 +384,7 @@ install_system() {
     log "Iniciando instalação do Resolvix DNS Server..."
     check_root
     
-    if systemctl is-active --quiet bind9 && systemctl is-active --quiet resolvix-dashboard; then
+    if systemctl is-active --quiet named && systemctl is-active --quiet resolvix-dashboard; then
         warning "Sistema já instalado"
         read -p "Reinstalar? (y/N): " -r
         [[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
@@ -394,8 +394,8 @@ install_system() {
     create_resolvix_user
     generate_bind_config
     
-    systemctl enable bind9 2>/dev/null || true
-    systemctl restart bind9 || { error "Falha ao iniciar BIND9"; exit 1; }
+    systemctl enable named 2>/dev/null || true
+    systemctl restart named || { error "Falha ao iniciar BIND9"; exit 1; }
     
     setup_dashboard || { error "Falha ao configurar dashboard"; exit 1; }
     setup_dashboard_service
@@ -404,7 +404,7 @@ install_system() {
     systemctl start resolvix-dashboard || { warning "Falha ao iniciar dashboard"; sleep 3; systemctl start resolvix-dashboard || true; }
     
     sleep 5
-    if systemctl is-active --quiet bind9 && systemctl is-active --quiet resolvix-dashboard; then
+    if systemctl is-active --quiet named && systemctl is-active --quiet resolvix-dashboard; then
         success "Instalação concluída!"
         echo ""
         info "Serviços:"
@@ -422,7 +422,7 @@ check_status() {
     info "Status do Resolvix DNS Server..."
     echo ""
     
-    systemctl is-active --quiet bind9 && echo -e "${GREEN}✓ BIND9 rodando${NC}" || echo -e "${RED}✗ BIND9 parado${NC}"
+    systemctl is-active --quiet named && echo -e "${GREEN}✓ BIND9 rodando${NC}" || echo -e "${RED}✗ BIND9 parado${NC}"
     systemctl is-active --quiet resolvix-dashboard && echo -e "${GREEN}✓ Dashboard rodando${NC}" || echo -e "${RED}✗ Dashboard parado${NC}"
     named-checkconf 2>/dev/null && echo -e "${GREEN}✓ Configuração válida${NC}" || echo -e "${RED}✗ Configuração inválida${NC}"
     timeout 5 dig @127.0.0.1 google.com A +short > /dev/null 2>&1 && echo -e "${GREEN}✓ DNS funcionando${NC}" || echo -e "${RED}✗ DNS falhando${NC}"
@@ -481,8 +481,8 @@ uninstall_system() {
     check_root
     info "Removendo Resolvix..."
     
-    systemctl stop resolvix-dashboard bind9 2>/dev/null || true
-    systemctl disable resolvix-dashboard bind9 2>/dev/null || true
+    systemctl stop resolvix-dashboard named 2>/dev/null || true
+    systemctl disable resolvix-dashboard named 2>/dev/null || true
     
     pkill -f "python.*app.py" 2>/dev/null || true
     pkill -f "named" 2>/dev/null || true
@@ -514,13 +514,13 @@ main() {
         "install") install_system ;;
         "uninstall") uninstall_system ;;
         "status") check_status ;;
-        "start") check_root; systemctl start bind9 resolvix-dashboard; success "Serviços iniciados" ;;
-        "stop") check_root; systemctl stop bind9 resolvix-dashboard; success "Serviços parados" ;;
-        "restart") check_root; systemctl restart bind9 resolvix-dashboard; success "Serviços reiniciados" ;;
+        "start") check_root; systemctl start named resolvix-dashboard; success "Serviços iniciados" ;;
+        "stop") check_root; systemctl stop named resolvix-dashboard; success "Serviços parados" ;;
+        "restart") check_root; systemctl restart named resolvix-dashboard; success "Serviços reiniciados" ;;
         "test") test_dns ;;
         "logs") 
             echo -e "${CYAN}Logs do BIND9:${NC}"
-            journalctl -u bind9 -n 10 --no-pager
+            journalctl -u named -n 10 --no-pager
             echo -e "${CYAN}Logs do Dashboard:${NC}"
             journalctl -u resolvix-dashboard -n 10 --no-pager ;;
         "dashboard") manage_dashboard "$@" ;;
