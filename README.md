@@ -3,7 +3,7 @@
 
 <div align="center">
 
-![DNS](https://img.shields.io/badge/DNS-BIND9-blue?style=for-the-badge&logo=dns&logoColor=white)
+![DNS](https://img.shields.io/badge/DNS-BIND9-blue?style=for-the-badge&log### 🛠️ **Funciona### 📊 **M### 🔧 **Automação e Deploy**
 ![Python](https://img.shields.io/badge/Python-Flask-green?style=for-the-badge&logo=python&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-SystemD-orange?style=for-the-badge&logo=linux&logoColor=white)
 ![Performance](https://img.shields.io/badge/Performance-50k%20QPS-red?style=for-the-badge)
@@ -81,7 +81,7 @@ graph TB
 - 🤖 Script unificado para todas as operações
 - 📦 Instalação zero-touch
 - 🔧 Configuração automática otimizada
-- 📋 Testes de stress e benchmark integrados
+- 📋 Testes de stress integrados
 
 ### 🔒 **Segurança Robusta**
 - 🛡️ ACL configurável por rede
@@ -112,20 +112,27 @@ sudo ./resolvix.sh install
 # 📊 Verificar status do sistema
 ./resolvix.sh status
 
-# 🌐 Iniciar dashboard web
+# 🌐 Gerenciar dashboard web
 ./resolvix.sh dashboard start
+./resolvix.sh dashboard stop
+./resolvix.sh dashboard restart
 
 # 🧪 Testar resolução DNS
 ./resolvix.sh test
 
-# 💥 Executar stress test
-./dns_stress_test.sh --quick
+# 💥 Executar stress test (script dedicado)
+./dns_stress_test.sh -t 1000 -c 50
 
-# 👀 Monitor em tempo real
-./resolvix.sh monitor
+# � Ver logs do sistema
+./resolvix.sh logs
 
-# 📈 Benchmark de performance
-./resolvix.sh benchmark
+# 🔄 Gerenciar serviços
+./resolvix.sh start    # Iniciar todos os serviços (bind9 + dashboard)
+./resolvix.sh stop     # Parar todos os serviços
+./resolvix.sh restart  # Reiniciar todos os serviços
+
+# �️ Desinstalar sistema
+./resolvix.sh uninstall
 ```
 
 ### 🌐 Interfaces Web
@@ -149,16 +156,15 @@ sudo ./resolvix.sh install
 
 ```bash
 # Teste rápido de performance
-./dns_stress_test.sh --quick
-# Resultado típico: 15.000 QPS / 50 threads / 10s
+./dns_stress_test.sh -t 1000 -c 50
+# Exemplo: 5.000 QPS / 50 threads / 10s
 
 # Teste intensivo (capacidade máxima)
-./dns_stress_test.sh --extreme  
-# Resultado típico: 45.000 QPS / 500 threads / 300s
+./dns_stress_test.sh -t 50000 -c 500
+# Exemplo: 45.000 QPS / 500 threads / 300s
 
-# Benchmark comparativo
-./resolvix.sh benchmark
-# Relatório completo gerado em /tmp/dns_stress_results/
+# Observação: o script `dns_stress_test.sh` é a ferramenta de benchmark dedicada;
+# o comando `resolvix.sh benchmark` foi removido na versão refinada.
 ```
 
 ## � Recursos Técnicos
@@ -219,22 +225,6 @@ Target QPS: 30,000
 💾 Memory Usage: 85% (8GB)
 ```
 
-## 🔮 Roadmap Técnico
-
-### 🎯 **Próximas Funcionalidades**
-- [ ] 📊 Integração Grafana/Prometheus
-- [ ] 🔐 Autenticação multi-usuário
-- [ ] 🌐 Suporte DNS over HTTPS (DoH)
-- [ ] 🐳 Containerização Docker
-- [ ] � Alta disponibilidade (clustering)
-- [ ] 🤖 Detecção de anomalias com ML
-- [ ] 📡 API GraphQL
-
-### 🏆 **Metas de Performance**
-- [ ] 🚀 100k+ QPS em single node
-- [ ] ⏱️ Sub-1ms latência para cache hits
-- [ ] 🌍 Deployment multi-região
-- [ ] � Auto-scaling baseado em carga
 
 ## 🛠️ Setup para Desenvolvimento
 
@@ -266,52 +256,36 @@ python app.py
 ```bash
 # Verificar configuração
 sudo named-checkconf
-./resolvix.sh configure
 
 # Verificar logs
 sudo journalctl -u bind9 -f
+
+# Verificar status completo
+./resolvix.sh status
 ```
 
 ### 🐌 **Performance abaixo do esperado**
 ```bash
-# Verificar recursos do sistema
-./resolvix.sh monitor
+# Verificar status do sistema
+./resolvix.sh status
 
-# Executar benchmark
-./resolvix.sh benchmark
+# Executar teste de DNS
+./resolvix.sh test
+
+# Stress test dedicado
+./dns_stress_test.sh -t 1000 -c 50
 ```
 
 ### 🌐 **Dashboard não carrega**
 ```bash
-# Verificar serviço
-./resolvix.sh dashboard start
+# Verificar e reiniciar serviço
+./resolvix.sh dashboard restart
 
 # Verificar logs
-./resolvix.sh logs dashboard
+./resolvix.sh logs
 ```
 
 </details>
-
-## 📊 Estrutura do Projeto
-
-```
-resolvix/
-├── 📜 resolvix.sh              # Script principal unificado
-├── 💥 dns_stress_test.sh       # Ferramenta de stress testing
-├── 📁 dashboard/               # Interface web
-│   ├── 🐍 app.py              # Backend Flask
-│   ├── ⚙️ config.py           # Configurações
-│   ├── 📋 requirements.txt     # Dependências Python
-│   └── 🎨 templates/          # Frontend HTML/CSS/JS
-├── 📄 LICENSE                  # Licença MIT
-└── 📖 README.md               # Esta documentação
-```
-
-## 🙏 Agradecimentos e Referências
-
-- 🏢 **Internet Systems Consortium (ISC)** - Pelo excelente BIND9
-- 🌍 **Comunidade Open Source** - Pelas melhores práticas e inspiração
-- 👨‍💻 **Desenvolvedores de DNS Tools** - Pela referência em performance testing
 
 ---
 
