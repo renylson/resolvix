@@ -3,7 +3,7 @@
 
 <div align="center">
 
-![DNS](https://img.shields.io/badge/DNS-BIND9-blue?style=for-the-badge&log### 🛠️ **Funciona### 📊 **M### 🔧 **Automação e Deploy**
+![DNS](https://img.shields.io/badge/DNS-BIND9-blue?style=for-the-badge&logo=dns&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-Flask-green?style=for-the-badge&logo=python&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-SystemD-orange?style=for-the-badge&logo=linux&logoColor=white)
 ![Performance](https://img.shields.io/badge/Performance-50k%20QPS-red?style=for-the-badge)
