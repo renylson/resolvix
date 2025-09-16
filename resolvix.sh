@@ -81,28 +81,58 @@ detect_distro() {
     fi
 }
 
+detect_bind_service() {
+    # Detectar qual é o nome correto do serviço BIND
+    if systemctl list-unit-files | grep -q "^bind9.service"; then
+        echo "bind9"
+    elif systemctl list-unit-files | grep -q "^named.service"; then
+        echo "named"
+    elif [[ -f /etc/systemd/system/bind9.service ]] || [[ -f /usr/lib/systemd/system/bind9.service ]]; then
+        echo "bind9"
+    elif [[ -f /etc/systemd/system/named.service ]] || [[ -f /usr/lib/systemd/system/named.service ]]; then
+        echo "named"
+    else
+        # Tentar detectar pelo executável
+        if command -v named >/dev/null 2>&1; then
+            echo "named"
+        else
+            echo "bind9"
+        fi
+    fi
+}
+
 create_resolvix_user() {
     local username="resolvix"
     
     if id "$username" &>/dev/null; then
-        return 0
+        info "Usuário resolvix já existe"
+    else
+        info "Criando usuário resolvix..."
+        useradd -r -s /bin/false -c "ResolvIX System User" -d /var/lib/resolvix "$username"
+        usermod -a -G bind "$username"
     fi
     
-    info "Criando usuário resolvix..."
-    useradd -r -s /bin/false -c "ResolvIX System User" -d /var/lib/resolvix "$username"
-    usermod -a -G bind "$username"
-    
     mkdir -p /var/lib/resolvix /var/log/resolvix /var/backups/resolvix
+    mkdir -p /var/log/named /var/cache/bind
+    
     chown "$username:$username" /var/lib/resolvix
     chown -R "$username:bind" /var/log/resolvix /var/backups/resolvix
+    chown bind:bind /var/log/named /var/cache/bind
+    
     chmod 750 /var/lib/resolvix
     chmod -R 775 /var/log/resolvix /var/backups/resolvix
+    chmod 755 /var/log/named /var/cache/bind
+    
+    touch /var/log/resolvix/dashboard.log
+    chown resolvix:bind /var/log/resolvix/dashboard.log
+    chmod 664 /var/log/resolvix/dashboard.log
 }
 
 install_dependencies() {
     local distro=$(detect_distro)
     
     info "Instalando dependências..."
+    info "Distribuição detectada: $distro"
     
     if ! ping -c 1 8.8.8.8 &> /dev/null; then
         error "Sem conectividade com a internet"
@@ -113,23 +143,71 @@ install_dependencies() {
         ubuntu|debian)
             apt-get update
             apt-get install -y bind9 bind9-utils python3 python3-pip python3-venv curl bind9-dnsutils bc lsof
+            
+            # Parar o serviço se estiver rodando para reconfigurar
+            systemctl stop systemd-resolved 2>/dev/null || true
+            systemctl disable systemd-resolved 2>/dev/null || true
             ;;
-        centos|rhel|fedora)
+        centos|rhel|fedora|rocky|almalinux)
             if command -v dnf >/dev/null 2>&1; then
                 dnf install -y bind bind-utils python3 python3-pip curl bc lsof
             else
                 yum install -y bind bind-utils python3 python3-pip curl bc lsof
             fi
+            
+            # Configurar firewall se ativo
+            if systemctl is-active --quiet firewalld; then
+                firewall-cmd --permanent --add-service=dns 2>/dev/null || true
+                firewall-cmd --permanent --add-port=5000/tcp 2>/dev/null || true
+                firewall-cmd --permanent --add-port=8053/tcp 2>/dev/null || true
+                firewall-cmd --reload 2>/dev/null || true
+            fi
+            ;;
+        opensuse*|suse)
+            zypper refresh
+            zypper install -y bind bind-utils python3 python3-pip curl bc lsof
+            ;;
+        arch)
+            pacman -Sy --noconfirm bind python python-pip curl bc lsof
             ;;
         *)
-            error "Distribuição não suportada: $distro"
-            exit 1
+            warning "Distribuição não totalmente suportada: $distro"
+            warning "Tentando instalação genérica..."
+            
+            # Tentar diferentes gerenciadores de pacote
+            if command -v apt-get >/dev/null 2>&1; then
+                apt-get update
+                apt-get install -y bind9 bind9-utils python3 python3-pip python3-venv curl bind9-dnsutils bc lsof
+            elif command -v yum >/dev/null 2>&1; then
+                yum install -y bind bind-utils python3 python3-pip curl bc lsof
+            elif command -v zypper >/dev/null 2>&1; then
+                zypper install -y bind bind-utils python3 python3-pip curl bc lsof
+            else
+                error "Gerenciador de pacotes não suportado"
+                exit 1
+            fi
             ;;
     esac
+    
+    # Verificar se Python3 está disponível
+    if ! command -v python3 >/dev/null 2>&1; then
+        error "Python3 não foi instalado corretamente"
+        exit 1
+    fi
+    
+    # Verificar se pip está disponível
+    if ! command -v pip3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
+        error "pip3 não foi instalado corretamente"
+        exit 1
+    fi
 }
 
 generate_bind_config() {
     info "Configurando BIND9..."
+    
+    # Criar diretórios necessários
+    mkdir -p /etc/bind /var/cache/bind /var/log/named
+    chown bind:bind /var/cache/bind /var/log/named
     
     [[ -f "/etc/bind/named.conf" ]] && cp "/etc/bind/named.conf" "/etc/bind/named.conf.backup.$(date +%Y%m%d_%H%M%S)"
     
@@ -231,12 +309,84 @@ acl "blackhole" {
 };
 EOF
 
-    mkdir -p /var/log/named
-    chown bind:bind /var/log/named
+
+    create_default_zone_files
+    
+   
+    chown -R bind:bind /etc/bind /var/cache/bind /var/log/named
+    chmod -R 644 /etc/bind/*
+    chmod 755 /etc/bind /var/cache/bind /var/log/named
     
     if ! named-checkconf; then
         error "Erro na configuração do BIND9"
         exit 1
+    fi
+}
+
+create_default_zone_files() {
+    info "Criando arquivos de zona padrão..."
+    
+    # db.local
+    if [[ ! -f /etc/bind/db.local ]]; then
+        cat > /etc/bind/db.local << 'EOF'
+$TTL    604800
+@       IN      SOA     localhost. root.localhost. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      localhost.
+@       IN      A       127.0.0.1
+@       IN      AAAA    ::1
+EOF
+    fi
+    
+    # db.127
+    if [[ ! -f /etc/bind/db.127 ]]; then
+        cat > /etc/bind/db.127 << 'EOF'
+$TTL    604800
+@       IN      SOA     localhost. root.localhost. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      localhost.
+1.0.0   IN      PTR     localhost.
+EOF
+    fi
+    
+    # db.0
+    if [[ ! -f /etc/bind/db.0 ]]; then
+        cat > /etc/bind/db.0 << 'EOF'
+$TTL    604800
+@       IN      SOA     localhost. root.localhost. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      localhost.
+EOF
+    fi
+    
+    # db.255
+    if [[ ! -f /etc/bind/db.255 ]]; then
+        cat > /etc/bind/db.255 << 'EOF'
+$TTL    604800
+@       IN      SOA     localhost. root.localhost. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      localhost.
+EOF
     fi
 }
 
@@ -399,7 +549,6 @@ else:
     sys.exit(1)
 " && success "Usuário criado: $admin_username" || { error "Falha ao criar usuário"; return 1; }
     
-    # Reiniciar dashboard para aplicar mudanças
     systemctl restart resolvix-dashboard 2>/dev/null || true
     
     cd "$SCRIPT_DIR"
@@ -408,16 +557,26 @@ else:
 setup_dashboard_service() {
     info "Configurando serviço systemd..."
     
+    # Garantir que os diretórios existem
+    mkdir -p /var/log/resolvix
+    chown -R resolvix:bind /var/log/resolvix
+    chmod -R 775 /var/log/resolvix
+    
+    # Configurar permissões do dashboard
     chown -R resolvix:bind "$DASHBOARD_DIR"
     chmod -R 755 "$DASHBOARD_DIR"
-    chown :bind /etc/bind/acl.conf
-    chmod 664 /etc/bind/acl.conf
+    
+    # Configurar ACL se existir
+    if [[ -f /etc/bind/acl.conf ]]; then
+        chown :bind /etc/bind/acl.conf
+        chmod 664 /etc/bind/acl.conf
+    fi
     
     cat > /etc/systemd/system/resolvix-dashboard.service << EOF
 [Unit]
 Description=Resolvix DNS Dashboard
-After=network.target bind9.service
-Requires=bind9.service
+After=network.target named.service
+Wants=named.service
 
 [Service]
 Type=simple
@@ -425,12 +584,24 @@ User=resolvix
 Group=bind
 WorkingDirectory=$DASHBOARD_DIR
 Environment=PATH=$DASHBOARD_DIR/venv/bin
+Environment=PYTHONPATH=$DASHBOARD_DIR
+Environment=LOG_FILE=/var/log/resolvix/dashboard.log
+ExecStartPre=/bin/mkdir -p /var/log/resolvix
+ExecStartPre=/bin/chown resolvix:bind /var/log/resolvix/dashboard.log
 ExecStart=$DASHBOARD_DIR/venv/bin/python $DASHBOARD_DIR/app.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SupplementaryGroups=bind
+UMask=0002
+
+# Configurações de segurança
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/resolvix $DASHBOARD_DIR/data
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -453,7 +624,11 @@ install_system() {
     log "Iniciando instalação do Resolvix DNS Server..."
     check_root
     
-    if systemctl is-active --quiet named && systemctl is-active --quiet resolvix-dashboard; then
+    # Detectar serviço BIND correto
+    local bind_service=$(detect_bind_service)
+    info "Serviço BIND detectado: $bind_service"
+    
+    if systemctl is-active --quiet "$bind_service" && systemctl is-active --quiet resolvix-dashboard; then
         warning "Sistema já instalado"
         read -p "Reinstalar? (y/N): " -r
         [[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
@@ -463,25 +638,41 @@ install_system() {
     create_resolvix_user
     generate_bind_config
     
-    systemctl enable named 2>/dev/null || true
-    systemctl restart named || { error "Falha ao iniciar BIND9"; exit 1; }
+    # Parar serviços conflitantes
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+    
+    # Configurar e iniciar BIND
+    systemctl enable "$bind_service" 2>/dev/null || true
+    systemctl restart "$bind_service" || { error "Falha ao iniciar BIND9 ($bind_service)"; exit 1; }
     
     setup_dashboard || { error "Falha ao configurar dashboard"; exit 1; }
     setup_dashboard_service
     create_global_command
     
-    systemctl start resolvix-dashboard || { warning "Falha ao iniciar dashboard"; sleep 3; systemctl start resolvix-dashboard || true; }
+    # Tentar iniciar dashboard com retry
+    local retry_count=0
+    while [[ $retry_count -lt 3 ]]; do
+        if systemctl start resolvix-dashboard; then
+            break
+        else
+            warning "Tentativa $((retry_count + 1)) de iniciar dashboard falhou"
+            sleep 3
+            ((retry_count++))
+        fi
+    done
     
     sleep 5
-    if systemctl is-active --quiet named && systemctl is-active --quiet resolvix-dashboard; then
+    if systemctl is-active --quiet "$bind_service" && systemctl is-active --quiet resolvix-dashboard; then
         success "Instalação concluída!"
         echo ""
         info "Serviços:"
-        echo "  - DNS Server: porta 53"
+        echo "  - DNS Server ($bind_service): porta 53"
         echo "  - Statistics: http://127.0.0.1:8053"
         echo "  - Dashboard: http://127.0.0.1:5000"
     else
         error "Falha na instalação"
+        warning "Verifique os logs com: journalctl -u resolvix-dashboard"
         exit 1
     fi
 }
@@ -491,7 +682,9 @@ check_status() {
     info "Status do Resolvix DNS Server..."
     echo ""
     
-    systemctl is-active --quiet named && echo -e "${GREEN}✓ BIND9 rodando${NC}" || echo -e "${RED}✗ BIND9 parado${NC}"
+    local bind_service=$(detect_bind_service)
+    
+    systemctl is-active --quiet "$bind_service" && echo -e "${GREEN}✓ BIND9 ($bind_service) rodando${NC}" || echo -e "${RED}✗ BIND9 ($bind_service) parado${NC}"
     systemctl is-active --quiet resolvix-dashboard && echo -e "${GREEN}✓ Dashboard rodando${NC}" || echo -e "${RED}✗ Dashboard parado${NC}"
     named-checkconf 2>/dev/null && echo -e "${GREEN}✓ Configuração válida${NC}" || echo -e "${RED}✗ Configuração inválida${NC}"
     timeout 5 dig @127.0.0.1 google.com A +short > /dev/null 2>&1 && echo -e "${GREEN}✓ DNS funcionando${NC}" || echo -e "${RED}✗ DNS falhando${NC}"
@@ -551,8 +744,10 @@ uninstall_system() {
     check_root
     info "Removendo Resolvix..."
     
-    systemctl stop resolvix-dashboard named 2>/dev/null || true
-    systemctl disable resolvix-dashboard named 2>/dev/null || true
+    local bind_service=$(detect_bind_service)
+    
+    systemctl stop resolvix-dashboard "$bind_service" 2>/dev/null || true
+    systemctl disable resolvix-dashboard "$bind_service" 2>/dev/null || true
     
     pkill -f "python.*app.py" 2>/dev/null || true
     pkill -f "named" 2>/dev/null || true
@@ -564,11 +759,11 @@ uninstall_system() {
     mkdir -p "$backup_dir"
     [[ -f /etc/bind/named.conf ]] && cp -r /etc/bind/* "$backup_dir/" 2>/dev/null
     
-    rm -rf /etc/bind /var/cache/bind /var/log/bind "$INSTALL_DIR"
+    rm -rf /etc/bind /var/cache/bind /var/log/bind /var/log/resolvix "$INSTALL_DIR"
     
     if id "resolvix" &>/dev/null; then
         userdel resolvix 2>/dev/null || true
-        rm -rf /var/lib/resolvix 2>/dev/null || true
+        rm -rf /var/lib/resolvix /var/backups/resolvix 2>/dev/null || true
     fi
     
     rm -f /usr/local/bin/resolvix
@@ -580,17 +775,23 @@ main() {
     local command="$1"
     shift 2>/dev/null || true
     
+    # Detectar serviço BIND para comandos que precisam
+    local bind_service=""
+    if [[ "$command" =~ ^(start|stop|restart|logs)$ ]]; then
+        bind_service=$(detect_bind_service)
+    fi
+    
     case "$command" in
         "install") install_system ;;
         "uninstall") uninstall_system ;;
         "status") check_status ;;
-        "start") check_root; systemctl start named resolvix-dashboard; success "Serviços iniciados" ;;
-        "stop") check_root; systemctl stop named resolvix-dashboard; success "Serviços parados" ;;
-        "restart") check_root; systemctl restart named resolvix-dashboard; success "Serviços reiniciados" ;;
+        "start") check_root; systemctl start "$bind_service" resolvix-dashboard; success "Serviços iniciados" ;;
+        "stop") check_root; systemctl stop "$bind_service" resolvix-dashboard; success "Serviços parados" ;;
+        "restart") check_root; systemctl restart "$bind_service" resolvix-dashboard; success "Serviços reiniciados" ;;
         "test") test_dns ;;
         "logs") 
-            echo -e "${CYAN}Logs do BIND9:${NC}"
-            journalctl -u named -n 10 --no-pager
+            echo -e "${CYAN}Logs do BIND9 ($bind_service):${NC}"
+            journalctl -u "$bind_service" -n 10 --no-pager
             echo -e "${CYAN}Logs do Dashboard:${NC}"
             journalctl -u resolvix-dashboard -n 10 --no-pager ;;
         "dashboard") manage_dashboard "$@" ;;
