@@ -562,6 +562,11 @@ setup_dashboard_service() {
     chown -R resolvix:bind /var/log/resolvix
     chmod -R 775 /var/log/resolvix
     
+    # Criar arquivo de log com permissões corretas
+    touch /var/log/resolvix/dashboard.log
+    chown resolvix:bind /var/log/resolvix/dashboard.log
+    chmod 664 /var/log/resolvix/dashboard.log
+    
     # Configurar permissões do dashboard
     chown -R resolvix:bind "$DASHBOARD_DIR"
     chmod -R 755 "$DASHBOARD_DIR"
@@ -587,6 +592,7 @@ Environment=PATH=$DASHBOARD_DIR/venv/bin
 Environment=PYTHONPATH=$DASHBOARD_DIR
 Environment=LOG_FILE=/var/log/resolvix/dashboard.log
 ExecStartPre=/bin/mkdir -p /var/log/resolvix
+ExecStartPre=/bin/touch /var/log/resolvix/dashboard.log
 ExecStartPre=/bin/chown resolvix:bind /var/log/resolvix/dashboard.log
 ExecStart=$DASHBOARD_DIR/venv/bin/python $DASHBOARD_DIR/app.py
 Restart=always

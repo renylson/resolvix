@@ -9,7 +9,7 @@ class Config:
     UPDATE_INTERVAL = int(os.environ.get('UPDATE_INTERVAL') or 30)
     CACHE_TIMEOUT = int(os.environ.get('CACHE_TIMEOUT') or 60)
     LOG_LEVEL = os.environ.get('LOG_LEVEL') or 'INFO'
-    LOG_FILE = os.environ.get('LOG_FILE') or '/var/log/resolvix-dashboard.log'
+    LOG_FILE = os.environ.get('LOG_FILE') or '/var/log/resolvix/dashboard.log'
     WTF_CSRF_ENABLED = True
     WTF_CSRF_TIME_LIMIT = 3600  # 1 hour
     SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT') or 3600)  # 1 hour

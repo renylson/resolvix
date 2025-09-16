@@ -516,10 +516,12 @@ if __name__ == '__main__':
         if not app.debug:
             import logging
             from logging.handlers import RotatingFileHandler
-            if not os.path.exists('/var/log'):
-                os.makedirs('/var/log', exist_ok=True)
+            log_file = os.environ.get('LOG_FILE', '/var/log/resolvix/dashboard.log')
+            log_dir = os.path.dirname(log_file)
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
             handler = RotatingFileHandler(
-                '/var/log/resolvix-dashboard.log',
+                log_file,
                 maxBytes=10 * 1024 * 1024,  # 10MB
                 backupCount=5
             )
