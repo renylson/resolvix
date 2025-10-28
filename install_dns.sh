@@ -42,8 +42,8 @@ print_header() {
     echo "    │  📧 Email:    renylsonm@gmail.com                          │"
     echo "    │  📱 Tel:      (87) 98846-3681                              │"
     echo "    │                                                             │"
-    echo "    │  🔒 Segurança:  DNSSEC habilitado                         │"
-    echo "    │  🌐 IPv4/IPv6: Suporte completo                           │"
+    echo "    │  🔒 Segurança:  DNSSEC habilitado                          │"
+    echo "    │  🌐 IPv4/IPv6: Suporte completo                            │"
     echo "    │                                                             │"
     echo "    └─────────────────────────────────────────────────────────────┘"
     echo ""
@@ -199,16 +199,24 @@ get_network_config() {
     print_info "Tentando detectar IPv6..."
     if command -v ip &> /dev/null; then
         print_info "  └─ Tentando: ip -6 addr show"
-        IPV6_ADDR=$(ip -6 addr show 2>/dev/null | grep -oP '(?<=inet6\s)([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | grep -v '^::1' | grep -v '^fe80' | head -1)
+        IPV6_ADDR=$(timeout 3 ip -6 addr show 2>/dev/null | grep -oP '(?<=inet6\s)([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | grep -v '^::1' | grep -v '^fe80' | head -1) || IPV6_ADDR=""
         if [ -n "$IPV6_ADDR" ]; then
             print_success "IPv6 detectado: $IPV6_ADDR"
         else
             print_warning "Nenhum endereço IPv6 encontrado"
             IPV6_ADDR=""
+            if ! confirm_action "IPv6 não foi detectado. Deseja continuar?"; then
+                print_error "Instalação cancelada pelo usuário"
+                exit 0
+            fi
         fi
     else
         print_warning "Comando 'ip' não disponível, pulando detecção IPv6"
         IPV6_ADDR=""
+        if ! confirm_action "Não foi possível verificar IPv6. Deseja continuar?"; then
+            print_error "Instalação cancelada pelo usuário"
+            exit 0
+        fi
     fi
 }
 
