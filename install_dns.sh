@@ -129,7 +129,7 @@ check_debian_version() {
 check_internet() {
     print_section "Verificando conectividade com internet"
     
-    if ! ping -c 1 8.8.8.8 &> /dev/null; then
+    if ! timeout 5 ping -c 1 8.8.8.8 &> /dev/null; then
         print_warning "Conectividade com internet pode estar limitada"
         if ! confirm_action "Deseja continuar mesmo assim?"; then
             print_error "Instalação cancelada pelo usuário"
@@ -150,11 +150,23 @@ get_network_config() {
     IPV4_ADDR=""
     IPV6_ADDR=""
     
-    # Tentar obter IPv4
-    IPV4_ADDR=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\.' | head -1)
+    # Tentar obter IPv4 com múltiplos métodos
+    if command -v hostname &> /dev/null; then
+        IPV4_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+    
+    if [ -z "$IPV4_ADDR" ] && command -v ip &> /dev/null; then
+        IPV4_ADDR=$(ip route get 1 2>/dev/null | awk '{print $NF; exit}')
+    fi
+    
+    if [ -z "$IPV4_ADDR" ]; then
+        IPV4_ADDR=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\.' | head -1)
+    fi
     
     # Tentar obter IPv6
-    IPV6_ADDR=$(ip -6 addr show | grep -oP '(?<=inet6\s)([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | grep -v '^::1' | grep -v '^fe80' | head -1)
+    if command -v ip &> /dev/null; then
+        IPV6_ADDR=$(ip -6 addr show 2>/dev/null | grep -oP '(?<=inet6\s)([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | grep -v '^::1' | grep -v '^fe80' | head -1)
+    fi
     
     if [ -z "$IPV4_ADDR" ]; then
         print_warning "Nenhum endereço IPv4 encontrado"
