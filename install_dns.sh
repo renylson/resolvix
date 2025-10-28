@@ -605,22 +605,41 @@ test_performance() {
 # CONFIGURAÇÃO DE DNS DO SISTEMA
 # ============================================================================
 
+disable_systemd_resolved() {
+    print_info "Desabilitando systemd-resolved..."
+    
+    # Parar o serviço
+    systemctl stop systemd-resolved 2>/dev/null || true
+    
+    # Desabilitar na inicialização
+    systemctl disable systemd-resolved 2>/dev/null || true
+    
+    # Remover link simbólico se existir
+    if [ -L /etc/resolv.conf ]; then
+        print_info "Removendo link simbólico de /etc/resolv.conf..."
+        rm -f /etc/resolv.conf
+    fi
+    
+    # Criar arquivo /etc/resolv.conf vazio
+    touch /etc/resolv.conf
+    
+    print_success "systemd-resolved desabilitado"
+}
+
 configure_system_dns() {
     print_section "Configurando DNS do sistema para usar Unbound"
     
-    print_info "Parando systemd-resolved..."
-    systemctl stop systemd-resolved 2>/dev/null || true
-    systemctl disable systemd-resolved 2>/dev/null || true
+    # Desabilitar systemd-resolved primeiro
+    disable_systemd_resolved
     
     print_info "Removendo proteção anterior de /etc/resolv.conf..."
     chattr -i /etc/resolv.conf 2>/dev/null || true
     
-    print_info "Aguardando liberação de porta 53..."
-    sleep 3
+    print_info "Limpando /etc/resolv.conf..."
+    > /etc/resolv.conf
     
-    # Criar /etc/resolv.conf com nosso servidor
     print_info "Configurando nameserver IPv4 (127.0.0.1)..."
-    cat > /etc/resolv.conf << EOF
+    cat > /etc/resolv.conf << 'EOF'
 # Configurado automaticamente pelo RESOLVIX
 # DNS Recursivo - Unbound
 nameserver 127.0.0.1
@@ -631,54 +650,77 @@ EOF
         echo "nameserver ::1" >> /etc/resolv.conf
     fi
     
+    # Aguardar um pouco
+    sleep 2
+    
     # Proteger contra sobrescrita
     print_info "Protegendo /etc/resolv.conf contra sobrescrita..."
     chattr +i /etc/resolv.conf 2>/dev/null || true
     
+    # Definir permissões
+    chmod 644 /etc/resolv.conf
+    
     print_success "DNS do sistema configurado para usar Unbound"
     echo ""
-    print_info "Nameservers configurados:"
-    cat /etc/resolv.conf | grep "^nameserver"
+    print_info "Conteúdo de /etc/resolv.conf:"
+    cat /etc/resolv.conf
 }
 
 verify_dns_configuration() {
     print_section "Verificando configuração de DNS do sistema"
     
-    print_info "Aguardando Unbound estar pronto..."
+    print_info "Aguardando Unbound estar completamente pronto..."
     sleep 3
     
+    echo ""
+    print_info "Status de /etc/resolv.conf:"
+    ls -la /etc/resolv.conf
+    
+    echo ""
+    print_info "Conteúdo de /etc/resolv.conf:"
+    cat /etc/resolv.conf
+    
+    echo ""
     print_info "Testando resolução com novo DNS..."
     
     # Testar com localhost IPv4
     print_info "Testando resolução via IPv4 (127.0.0.1)..."
-    if dig @127.0.0.1 +short google.com A 2>/dev/null | grep -q "\."; then
+    if timeout 5 dig @127.0.0.1 +short google.com A 2>/dev/null | grep -q "\."; then
         print_success "Resolução via IPv4 (127.0.0.1) funcionando"
+        dig @127.0.0.1 +short google.com A | head -2
     else
         print_error "Falha na resolução via IPv4"
     fi
     
     # Testar com localhost IPv6 se habilitado
     if [ "$ENABLE_IPV6" == "yes" ]; then
+        echo ""
         print_info "Testando resolução via IPv6 (::1)..."
-        if dig @::1 +short google.com A 2>/dev/null | grep -q "\."; then
+        if timeout 5 dig @::1 +short google.com A 2>/dev/null | grep -q "\."; then
             print_success "Resolução via IPv6 (::1) funcionando"
+            dig @::1 +short google.com A | head -2
         else
             print_warning "Falha na resolução via IPv6"
         fi
     fi
     
     # Testar resolução padrão do sistema
-    print_info "Testando resolução padrão do sistema..."
-    if nslookup google.com 127.0.0.1 2>/dev/null | grep -q "Address"; then
+    echo ""
+    print_info "Testando resolução padrão do sistema (nslookup)..."
+    if timeout 5 nslookup google.com 127.0.0.1 2>/dev/null | grep -q "Address"; then
         print_success "Sistema usando Unbound como DNS padrão"
     else
         print_warning "Sistema pode não estar usando Unbound corretamente"
     fi
     
-    # Verificar conteúdo de /etc/resolv.conf
+    # Verificar status do systemd-resolved
     echo ""
-    print_info "Conteúdo atual de /etc/resolv.conf:"
-    cat /etc/resolv.conf
+    print_info "Status do systemd-resolved:"
+    if systemctl is-enabled systemd-resolved 2>/dev/null | grep -q "enabled"; then
+        print_warning "systemd-resolved ainda está habilitado"
+    else
+        print_success "systemd-resolved desabilitado"
+    fi
 }
 
 # ============================================================================
