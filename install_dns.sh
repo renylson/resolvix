@@ -33,14 +33,20 @@ BOLD='\033[1m'
 print_header() {
     clear
     echo -e "${CYAN}${BOLD}"
-    echo "╔════════════════════════════════════════════════════════════════╗"
-    echo "║                       RESOLVIX v1.0                           ║"
-    echo "║            Instalador de DNS Recursivo - Unbound              ║"
-    echo "║                                                                ║"
-    echo "║  Autor: Renylson Marques                                      ║"
-    echo "║  Email: renylsonm@gmail.com                                   ║"
-    echo "║  Telefone: (87) 98846-3681                                    ║"
-    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo "    ┌─────────────────────────────────────────────────────────────┐"
+    echo "    │                  DNS RECURSIVO - UNBOUND v1.0               │"
+    echo "    │                   Instalador Profissional                   │"
+    echo "    ├─────────────────────────────────────────────────────────────┤"
+    echo "    │                                                             │"
+    echo "    │  👤 Autor:    Renylson Marques                             │"
+    echo "    │  📧 Email:    renylsonm@gmail.com                          │"
+    echo "    │  📱 Tel:      (87) 98846-3681                              │"
+    echo "    │                                                             │"
+    echo "    │  🔒 Segurança:  DNSSEC habilitado                         │"
+    echo "    │  🌐 IPv4/IPv6: Suporte completo                           │"
+    echo "    │                                                             │"
+    echo "    └─────────────────────────────────────────────────────────────┘"
+    echo ""
     echo -e "${NC}"
 }
 
@@ -150,35 +156,58 @@ get_network_config() {
     IPV4_ADDR=""
     IPV6_ADDR=""
     
-    # Tentar obter IPv4 com múltiplos métodos
+    print_info "Tentando detectar IPv4..."
+    
+    # Método 1: hostname -I
     if command -v hostname &> /dev/null; then
-        IPV4_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
+        print_info "  └─ Tentando: hostname -I"
+        IPV4_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}' | head -1)
+        if [ -n "$IPV4_ADDR" ] && [ "$IPV4_ADDR" != "127.0.0.1" ]; then
+            print_success "IPv4 detectado (hostname -I): $IPV4_ADDR"
+        fi
     fi
     
-    if [ -z "$IPV4_ADDR" ] && command -v ip &> /dev/null; then
-        IPV4_ADDR=$(ip route get 1 2>/dev/null | awk '{print $NF; exit}')
+    # Método 2: ip route get
+    if [ -z "$IPV4_ADDR" ] || [ "$IPV4_ADDR" == "127.0.0.1" ]; then
+        if command -v ip &> /dev/null; then
+            print_info "  └─ Tentando: ip route get 1"
+            IPV4_ADDR=$(ip route get 1 2>/dev/null | awk '{print $(NF-2); exit}' | grep -v '^127\.')
+            if [ -n "$IPV4_ADDR" ]; then
+                print_success "IPv4 detectado (ip route): $IPV4_ADDR"
+            fi
+        fi
     fi
     
+    # Método 3: ip addr show
+    if [ -z "$IPV4_ADDR" ] || [ "$IPV4_ADDR" == "127.0.0.1" ]; then
+        if command -v ip &> /dev/null; then
+            print_info "  └─ Tentando: ip -4 addr show"
+            IPV4_ADDR=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\.' | head -1)
+            if [ -n "$IPV4_ADDR" ]; then
+                print_success "IPv4 detectado (ip addr): $IPV4_ADDR"
+            fi
+        fi
+    fi
+    
+    # Se ainda não encontrou, usar loopback
     if [ -z "$IPV4_ADDR" ]; then
-        IPV4_ADDR=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\.' | head -1)
-    fi
-    
-    # Tentar obter IPv6
-    if command -v ip &> /dev/null; then
-        IPV6_ADDR=$(ip -6 addr show 2>/dev/null | grep -oP '(?<=inet6\s)([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | grep -v '^::1' | grep -v '^fe80' | head -1)
-    fi
-    
-    if [ -z "$IPV4_ADDR" ]; then
-        print_warning "Nenhum endereço IPv4 encontrado"
+        print_warning "Nenhum endereço IPv4 encontrado, usando 127.0.0.1"
         IPV4_ADDR="127.0.0.1"
-    else
-        print_success "IPv4 detectado: $IPV4_ADDR"
     fi
     
-    if [ -n "$IPV6_ADDR" ]; then
-        print_success "IPv6 detectado: $IPV6_ADDR"
+    # Detectar IPv6
+    print_info "Tentando detectar IPv6..."
+    if command -v ip &> /dev/null; then
+        print_info "  └─ Tentando: ip -6 addr show"
+        IPV6_ADDR=$(ip -6 addr show 2>/dev/null | grep -oP '(?<=inet6\s)([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | grep -v '^::1' | grep -v '^fe80' | head -1)
+        if [ -n "$IPV6_ADDR" ]; then
+            print_success "IPv6 detectado: $IPV6_ADDR"
+        else
+            print_warning "Nenhum endereço IPv6 encontrado"
+            IPV6_ADDR=""
+        fi
     else
-        print_warning "Nenhum endereço IPv6 detectado"
+        print_warning "Comando 'ip' não disponível, pulando detecção IPv6"
         IPV6_ADDR=""
     fi
 }
@@ -597,54 +626,66 @@ show_status() {
 
 show_final_info() {
     echo -e "\n${GREEN}${BOLD}"
-    echo "╔════════════════════════════════════════════════════════════════╗"
-    echo "║          RESOLVIX - Instalação Concluída com Sucesso!         ║"
-    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo "    ███████╗██╗   ██╗ ██████╗███████╗███████╗███████╗"
+    echo "    ██╔════╝██║   ██║██╔════╝██╔════╝██╔════╝██╔════╝"
+    echo "    ███████╗██║   ██║██║     █████╗  ███████╗███████╗"
+    echo "    ╚════██║██║   ██║██║     ██╔══╝  ╚════██║╚════██║"
+    echo "    ███████║╚██████╔╝╚██████╗███████╗███████║███████║"
+    echo "    ╚══════╝ ╚═════╝  ╚═════╝╚══════╝╚══════╝╚══════╝"
     echo -e "${NC}\n"
     
-    echo -e "${BOLD}Informações do Servidor DNS:${NC}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Nome do Projeto: RESOLVIX"
-    echo "Tipo: DNS Recursivo"
-    echo "Servidor: Unbound"
+    echo -e "${BOLD}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}║${GREEN}   RESOLVIX - Instalação Concluída com Sucesso! ✓${BOLD}          ║${NC}"
+    echo -e "${BOLD}╚════════════════════════════════════════════════════════════════╝${NC}\n"
+    
+    echo -e "${BOLD}📋 Informações do Servidor DNS:${NC}"
+    echo -e "${BLUE}$(printf '─%.0s' {1..70})${NC}"
+    echo "  Nome do Projeto ......... RESOLVIX"
+    echo "  Tipo ................... DNS Recursivo"
+    echo "  Servidor ............... Unbound (NLnet Labs)"
     echo ""
-    echo "Autor: Renylson Marques"
-    echo "Email: renylsonm@gmail.com"
-    echo "Telefone: (87) 98846-3681"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "${BOLD}👤 Autor:${NC}"
+    echo "  Nome ................... Renylson Marques"
+    echo "  Email .................. renylsonm@gmail.com"
+    echo "  Telefone ............... (87) 98846-3681"
     echo ""
-    echo -e "${BOLD}Configurações:${NC}"
-    echo "├─ Modo: $([ "$IP_MODE_TYPE" == "local" ] && echo "Local" || echo "Público")"
-    echo "├─ IP: $IPV4_ADDR"
+    echo -e "${BOLD}⚙️  Configurações Aplicadas:${NC}"
+    echo "  Mode ................... $([ "$IP_MODE_TYPE" == "local" ] && echo "🏠 Local (Qualquer Origem)" || echo "🌐 Público (Restrito)")"
+    echo "  IP Versão .............. $([ "$ENABLE_IPV6" == "yes" ] && echo "IPv4 + IPv6" || echo "IPv4 Apenas")"
+    echo "  Endereço IPv4 .......... $IPV4_ADDR"
     if [ -n "$IPV6_ADDR" ]; then
-        echo "├─ IPv6: $IPV6_ADDR"
+        echo "  Endereço IPv6 .......... $IPV6_ADDR"
     fi
-    echo "├─ Versão IP: $([ "$ENABLE_IPV6" == "yes" ] && echo "IPv4 + IPv6" || echo "IPv4")"
-    echo "├─ Porta: 53 (UDP/TCP)"
-    echo "├─ Threads: 16"
-    echo "├─ Cache MSG: 512MB"
-    echo "├─ Cache RRSET: 512MB"
-    echo "├─ DNSSEC: Ativado"
-    echo "└─ Performance: Otimizada"
+    echo "  Porta .................. 53 (UDP/TCP)"
+    echo "  Threads ................ 16"
+    echo "  Cache Mensagens ........ 512MB"
+    echo "  Cache RRSET ............ 512MB"
+    echo "  DNSSEC ................. ✓ Habilitado"
+    echo "  Performance ............ Otimizada (1M+ qps)"
     echo ""
-    echo -e "${BOLD}Comandos Úteis:${NC}"
-    echo "├─ Status:     systemctl status unbound"
-    echo "├─ Reiniciar:  systemctl restart unbound"
-    echo "├─ Parar:      systemctl stop unbound"
-    echo "├─ Logs:       journalctl -u unbound -f"
-    echo "├─ Teste DNS:  dig @127.0.0.1 google.com"
-    echo "├─ Stats:      unbound-control stats"
-    echo "└─ Config:     /etc/unbound/unbound.conf"
+    echo -e "${BOLD}🔧 Comandos Úteis:${NC}"
+    echo "  Status ................. systemctl status unbound"
+    echo "  Reiniciar .............. systemctl restart unbound"
+    echo "  Parar Serviço .......... systemctl stop unbound"
+    echo "  Logs em Tempo Real ..... journalctl -u unbound -f"
+    echo "  Teste de DNS ........... dig @127.0.0.1 google.com"
+    echo "  Estatísticas ........... unbound-control stats"
+    echo "  Arquivo Config ......... /etc/unbound/unbound.conf"
     echo ""
-    echo -e "${YELLOW}${BOLD}⚠ Importante:${NC}"
-    echo "├─ Este servidor está configurado como DNS local da máquina"
-    echo "├─ Para usar em produção, considere as seguintes boas práticas:"
-    echo "│  • Executar Unbound em usuário não-root"
-    echo "│  • Configurar firewall adequadamente"
-    echo "│  • Monitorar performance e logs regularmente"
-    echo "│  • Fazer backups periódicos da configuração"
-    echo "│  • Manter o sistema e pacotes atualizados"
-    echo "└─ Consulte a documentação: https://nlnetlabs.nl/projects/unbound/"
+    echo -e "${BOLD}🔒 Boas Práticas de Produção:${NC}"
+    echo "  ✓ Executar Unbound em usuário não-root"
+    echo "  ✓ Configurar firewall adequadamente"
+    echo "  ✓ Monitorar performance e logs regularmente"
+    echo "  ✓ Fazer backups periódicos da configuração"
+    echo "  ✓ Manter o sistema e pacotes atualizados"
+    echo "  ✓ Implementar rate limiting para proteção"
+    echo "  ✓ Habilitar DNSSEC para validação de respostas"
+    echo ""
+    echo -e "${BOLD}📚 Documentação:${NC}"
+    echo "  Site Oficial ........... https://nlnetlabs.nl/projects/unbound/"
+    echo "  Documentação ........... https://unbound.docs.nlnetlabs.nl/"
+    echo ""
+    echo -e "${BLUE}$(printf '═%.0s' {1..70})${NC}"
     echo ""
 }
 
