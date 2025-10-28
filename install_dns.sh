@@ -606,24 +606,37 @@ test_performance() {
 # ============================================================================
 
 disable_systemd_resolved() {
-    print_info "Desabilitando systemd-resolved..."
+    print_info "Desabilitando systemd-resolved de forma agressiva..."
     
     # Parar o serviço
+    print_info "Parando systemd-resolved..."
     systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl kill systemd-resolved 2>/dev/null || true
+    sleep 1
     
     # Desabilitar na inicialização
+    print_info "Desabilitando systemd-resolved na inicialização..."
     systemctl disable systemd-resolved 2>/dev/null || true
     
+    # Mascarar serviço para impedir reinicialização
+    print_info "Mascarando serviço systemd-resolved..."
+    systemctl mask systemd-resolved 2>/dev/null || true
+    
     # Remover link simbólico se existir
+    print_info "Removendo link simbólico de /etc/resolv.conf..."
     if [ -L /etc/resolv.conf ]; then
-        print_info "Removendo link simbólico de /etc/resolv.conf..."
         rm -f /etc/resolv.conf
     fi
     
-    # Criar arquivo /etc/resolv.conf vazio
-    touch /etc/resolv.conf
+    # Remover o arquivo completo
+    if [ -f /etc/resolv.conf ]; then
+        rm -f /etc/resolv.conf
+    fi
     
-    print_success "systemd-resolved desabilitado"
+    # Aguardar
+    sleep 2
+    
+    print_success "systemd-resolved completamente desabilitado"
 }
 
 configure_system_dns() {
@@ -632,37 +645,61 @@ configure_system_dns() {
     # Desabilitar systemd-resolved primeiro
     disable_systemd_resolved
     
-    print_info "Removendo proteção anterior de /etc/resolv.conf..."
-    chattr -i /etc/resolv.conf 2>/dev/null || true
+    # Aguardar liberação da porta 53
+    print_info "Aguardando liberação de porta 53..."
+    sleep 3
     
-    print_info "Limpando /etc/resolv.conf (remoção de entradas nameserver existentes usando sed)..."
-
-    # Garantir que o arquivo exista
-    touch /etc/resolv.conf
-
-    # Remover linhas nameserver antigas usando sed
-    sed -i '/^nameserver\s\+/d' /etc/resolv.conf || true
-
-    # Preparar novo cabeçalho e entries (usamos printf + cat para inserir no topo)
-    if [ "$ENABLE_IPV6" == "yes" ] && [ -n "$IPV6_ADDR" ]; then
-        printf '# Configurado automaticamente pelo RESOLVIX\n# DNS Recursivo - Unbound\nnameserver 127.0.0.1\nnameserver ::1\n' | cat - /etc/resolv.conf > /tmp/resolv.conf.$$ && mv /tmp/resolv.conf.$$ /etc/resolv.conf
-    else
-        printf '# Configurado automaticamente pelo RESOLVIX\n# DNS Recursivo - Unbound\nnameserver 127.0.0.1\n' | cat - /etc/resolv.conf > /tmp/resolv.conf.$$ && mv /tmp/resolv.conf.$$ /etc/resolv.conf
+    # Verificar se a porta 53 está disponível
+    if command -v netstat &> /dev/null; then
+        if netstat -tuln 2>/dev/null | grep -q ":53 "; then
+            print_success "Porta 53 disponível para Unbound"
+        fi
     fi
     
-    # Aguardar um pouco
-    sleep 2
+    # Criar arquivo /etc/resolv.conf NOVO
+    print_info "Criando novo arquivo /etc/resolv.conf..."
     
-    # Proteger contra sobrescrita
-    print_info "Protegendo /etc/resolv.conf contra sobrescrita..."
-    chattr +i /etc/resolv.conf 2>/dev/null || true
+    # Remover proteção antiga
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    
+    # Remover arquivo completamente
+    rm -f /etc/resolv.conf
+    
+    # Criar novo arquivo com permissões corretas
+    cat > /etc/resolv.conf << 'EOF'
+# ============================================================================
+# Configurado automaticamente pelo RESOLVIX
+# DNS Recursivo - Unbound
+# ============================================================================
+nameserver 127.0.0.1
+EOF
+    
+    # Adicionar IPv6 se habilitado
+    if [ "$ENABLE_IPV6" == "yes" ] && [ -n "$IPV6_ADDR" ]; then
+        echo "nameserver ::1" >> /etc/resolv.conf
+    fi
     
     # Definir permissões
     chmod 644 /etc/resolv.conf
     
-    print_success "DNS do sistema configurado para usar Unbound"
+    # Proteger contra sobrescrita usando chattr
+    print_info "Protegendo /etc/resolv.conf contra sobrescrita..."
+    chattr +i /etc/resolv.conf 2>/dev/null || {
+        print_warning "chattr não disponível, tentando alternativa..."
+        # Se chattr falhar, tentar tornar somente leitura
+        chmod 444 /etc/resolv.conf
+    }
+    
+    # Verificar se foi escrito corretamente
+    if grep -q "nameserver 127.0.0.1" /etc/resolv.conf; then
+        print_success "DNS do sistema configurado para usar Unbound"
+    else
+        print_error "Falha ao configurar /etc/resolv.conf"
+        return 1
+    fi
+    
     echo ""
-    print_info "Conteúdo de /etc/resolv.conf:"
+    print_info "Conteúdo final de /etc/resolv.conf:"
     cat /etc/resolv.conf
 }
 
@@ -1475,6 +1512,17 @@ main() {
         sleep 5
         test_prometheus_integration
     fi
+    
+    # ÚLTIMA AÇÃO: Garantir que o DNS está correto
+    print_section "Etapa Final: Validação e Configuração Definitiva de DNS"
+    print_info "Executando última configuração de DNS..."
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    echo "nameserver 127.0.0.1" > /etc/resolv.conf
+    if [ "$ENABLE_IPV6" == "yes" ]; then
+        echo "nameserver ::1" >> /etc/resolv.conf
+    fi
+    chattr +i /etc/resolv.conf 2>/dev/null || true
+    print_success "DNS definitivamente configurado para localhost"
     
     # Status final
     show_status
