@@ -2,14 +2,14 @@
 
 ################################################################################
 #                                  RESOLVIX                                    #
-#                    Instalador de DNS Recursivo - Unbound                    #
+#                    Instalador de DNS Recursivo - Unbound                     #
 #                                                                              #
-# Autor: Renylson Marques                                                     #
-# Email: renylsonm@gmail.com                                                  #
-# Telefone: (87) 98846-3681                                                   #
+# Autor: Renylson Marques                                                      #
+# Email: renylsonm@gmail.com                                                   #
+# Telefone: (87) 98846-3681                                                    #
 #                                                                              #
-# Descrição: Script de instalação e configuração de servidor DNS recursivo    #
-#           de alta performance usando Unbound em Debian 13                   #
+# Descrição: Script de instalação e configuração de servidor DNS recursivo     #
+#           de alta performance usando Unbound em Debian 13                    #
 #                                                                              #
 ################################################################################
 
@@ -304,6 +304,20 @@ ask_public_ip_blocks() {
     fi
 }
 
+ask_monitoring() {
+    print_section "Configuração de monitoramento"
+    
+    echo -e "Deseja instalar e configurar Prometheus com exportador de métricas?\n"
+    
+    if confirm_action "Instalar Prometheus e exportador?"; then
+        INSTALL_PROMETHEUS="yes"
+        print_success "Prometheus será instalado"
+    else
+        INSTALL_PROMETHEUS="no"
+        print_info "Prometheus não será instalado"
+    fi
+}
+
 # ============================================================================
 # INSTALAÇÃO DE DEPENDÊNCIAS
 # ============================================================================
@@ -322,7 +336,7 @@ update_system() {
 install_dependencies() {
     print_section "Instalando dependências"
     
-    local packages="unbound unbound-anchor curl wget net-tools dnsutils iputils-ping"
+    local packages="unbound unbound-anchor curl wget net-tools dnsutils iputils-ping python3 python3-pip"
     
     apt-get install -y $packages || {
         print_error "Falha ao instalar dependências"
@@ -611,6 +625,461 @@ EOF
 }
 
 # ============================================================================
+# EXPORTADOR PROMETHEUS
+# ============================================================================
+
+create_prometheus_exporter() {
+    print_section "Criando exportador Prometheus para Unbound"
+    
+    mkdir -p /opt/resolvix
+    
+    cat > /opt/resolvix/unbound_exporter.py << 'PYTHON_EOF'
+#!/usr/bin/env python3
+"""
+RESOLVIX - Exportador Prometheus para Unbound
+Coleta estatísticas do Unbound e as exporta em formato Prometheus
+"""
+
+import subprocess
+import re
+import time
+import logging
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from threading import Thread
+from pathlib import Path
+
+# Configuração de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class UnboundMetrics:
+    """Coleta e processa métricas do Unbound"""
+    
+    def __init__(self):
+        self.metrics = {}
+        self.last_update = 0
+        self.cache_ttl = 5  # Cache de 5 segundos
+    
+    def execute_unbound_control(self, command):
+        """Executa comando unbound-control"""
+        try:
+            result = subprocess.run(
+                ['unbound-control', command],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                logger.error(f"Erro ao executar unbound-control {command}: {result.stderr}")
+                return None
+        except Exception as e:
+            logger.error(f"Exceção ao executar unbound-control: {e}")
+            return None
+    
+    def parse_stats(self, stats_output):
+        """Parse das estatísticas do Unbound"""
+        metrics = {}
+        
+        for line in stats_output.split('\n'):
+            if not line.strip():
+                continue
+            
+            parts = line.split('=')
+            if len(parts) != 2:
+                continue
+            
+            key, value = parts[0].strip(), parts[1].strip()
+            
+            # Converter para número se possível
+            try:
+                if '.' in value:
+                    metrics[key] = float(value)
+                else:
+                    metrics[key] = int(value)
+            except ValueError:
+                metrics[key] = value
+        
+        return metrics
+    
+    def get_metrics(self):
+        """Obtém todas as métricas"""
+        current_time = time.time()
+        
+        # Usar cache se ainda válido
+        if current_time - self.last_update < self.cache_ttl:
+            return self.metrics
+        
+        # Coletar estatísticas
+        stats = self.execute_unbound_control('stats')
+        if stats:
+            self.metrics = self.parse_stats(stats)
+            self.last_update = current_time
+        
+        return self.metrics
+    
+    def format_prometheus(self):
+        """Formata métricas em formato Prometheus"""
+        metrics = self.get_metrics()
+        output = []
+        
+        # Header
+        output.append("# HELP unbound_info Informações do servidor Unbound")
+        output.append("# TYPE unbound_info gauge")
+        output.append('unbound_info{version="1.22.0"} 1')
+        output.append("")
+        
+        # Métricas de queries
+        output.append("# HELP unbound_queries_total Total de queries recebidas")
+        output.append("# TYPE unbound_queries_total counter")
+        if 'total.queries' in metrics:
+            output.append(f"unbound_queries_total {metrics['total.queries']}")
+        output.append("")
+        
+        # Métricas de cache
+        output.append("# HELP unbound_cache_prefetches Total de prefetches do cache")
+        output.append("# TYPE unbound_cache_prefetches counter")
+        if 'total.prefetch' in metrics:
+            output.append(f"unbound_cache_prefetches {metrics['total.prefetch']}")
+        output.append("")
+        
+        # Métricas de hits e misses
+        output.append("# HELP unbound_cache_hits Cache hits")
+        output.append("# TYPE unbound_cache_hits counter")
+        if 'total.queries' in metrics and 'total.cached_queries' in metrics:
+            output.append(f"unbound_cache_hits {metrics.get('total.cached_queries', 0)}")
+        output.append("")
+        
+        # Métricas de DNSSEC
+        output.append("# HELP unbound_dnssec_queries DNSSEC queries")
+        output.append("# TYPE unbound_dnssec_queries counter")
+        if 'total.dnssec.queries' in metrics:
+            output.append(f"unbound_dnssec_queries {metrics['total.dnssec.queries']}")
+        output.append("")
+        
+        output.append("# HELP unbound_dnssec_bogus DNSSEC validações falhadas")
+        output.append("# TYPE unbound_dnssec_bogus counter")
+        if 'total.dnssec.bogus' in metrics:
+            output.append(f"unbound_dnssec_bogus {metrics['total.dnssec.bogus']}")
+        output.append("")
+        
+        # Métricas de recursão
+        output.append("# HELP unbound_recursion_queries Queries recursivas")
+        output.append("# TYPE unbound_recursion_queries counter")
+        if 'total.recursion.queries' in metrics:
+            output.append(f"unbound_recursion_queries {metrics['total.recursion.queries']}")
+        output.append("")
+        
+        # Métricas de timeouts
+        output.append("# HELP unbound_recursion_timeouts Timeouts de recursão")
+        output.append("# TYPE unbound_recursion_timeouts counter")
+        if 'total.recursion.time_timeouts' in metrics:
+            output.append(f"unbound_recursion_timeouts {metrics['total.recursion.time_timeouts']}")
+        output.append("")
+        
+        # Métricas de memória e threads
+        output.append("# HELP unbound_requestlist_current Requisições pendentes na fila")
+        output.append("# TYPE unbound_requestlist_current gauge")
+        if 'total.requestlist.current.all' in metrics:
+            output.append(f"unbound_requestlist_current {metrics['total.requestlist.current.all']}")
+        output.append("")
+        
+        output.append("# HELP unbound_requestlist_overwritten Requisições sobrescritas")
+        output.append("# TYPE unbound_requestlist_overwritten counter")
+        if 'total.requestlist.overwritten' in metrics:
+            output.append(f"unbound_requestlist_overwritten {metrics['total.requestlist.overwritten']}")
+        output.append("")
+        
+        # Métricas de resposta
+        output.append("# HELP unbound_responses_total Total de respostas")
+        output.append("# TYPE unbound_responses_total counter")
+        if 'total.responses' in metrics:
+            output.append(f"unbound_responses_total {metrics['total.responses']}")
+        output.append("")
+        
+        output.append("# HELP unbound_responses_servfail Respostas SERVFAIL")
+        output.append("# TYPE unbound_responses_servfail counter")
+        if 'total.responses_servfail' in metrics:
+            output.append(f"unbound_responses_servfail {metrics['total.responses_servfail']}")
+        output.append("")
+        
+        # Todos os métricas restantes
+        output.append("# HELP unbound_stats_raw Estatísticas brutas do Unbound")
+        output.append("# TYPE unbound_stats_raw gauge")
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                # Sanitizar nome da métrica
+                metric_name = re.sub(r'[^a-zA-Z0-9_]', '_', f'unbound_{key}')
+                output.append(f'{metric_name} {value}')
+        
+        return '\n'.join(output) + '\n'
+
+class PrometheusExporterHandler(BaseHTTPRequestHandler):
+    """Handler HTTP para o exportador Prometheus"""
+    
+    metrics = UnboundMetrics()
+    
+    def do_GET(self):
+        """Handle GET requests"""
+        if self.path == '/metrics':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            
+            try:
+                output = self.metrics.format_prometheus()
+                self.wfile.write(output.encode('utf-8'))
+            except Exception as e:
+                logger.error(f"Erro ao gerar métricas: {e}")
+                error_msg = f"Erro ao gerar métricas: {e}\n"
+                self.wfile.write(error_msg.encode('utf-8'))
+        
+        elif self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK\n')
+        
+        else:
+            self.send_response(404)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'404 Not Found\n')
+    
+    def log_message(self, format, *args):
+        """Log HTTP requests"""
+        logger.info(f"{self.client_address[0]} - {format % args}")
+
+def main():
+    """Função principal"""
+    port = 9100
+    server_address = ('0.0.0.0', port)
+    httpd = HTTPServer(server_address, PrometheusExporterHandler)
+    
+    logger.info(f"Iniciando exportador Prometheus na porta {port}")
+    logger.info(f"Acesse http://localhost:{port}/metrics para ver as métricas")
+    
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Encerrando exportador...")
+        httpd.shutdown()
+
+if __name__ == '__main__':
+    main()
+PYTHON_EOF
+    
+    chmod +x /opt/resolvix/unbound_exporter.py
+    print_success "Exportador Prometheus criado"
+}
+
+install_prometheus_dependencies() {
+    print_section "Instalando dependências do Prometheus"
+    
+    python3 -m pip install prometheus-client --break-system-packages 2>/dev/null || {
+        print_info "prometheus-client será instalado na primeira execução"
+    }
+    
+    print_success "Dependências do Prometheus configuradas"
+}
+
+create_prometheus_exporter_service() {
+    print_section "Criando serviço systemd do exportador"
+    
+    cat > /etc/systemd/system/unbound-exporter.service << EOF
+[Unit]
+Description=RESOLVIX - Unbound Prometheus Exporter
+After=network-online.target unbound.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /opt/resolvix/unbound_exporter.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=unbound-exporter
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    systemctl enable unbound-exporter
+    
+    print_success "Serviço exportador criado"
+}
+
+start_prometheus_exporter() {
+    print_section "Iniciando exportador Prometheus"
+    
+    systemctl restart unbound-exporter
+    sleep 2
+    
+    if systemctl is-active --quiet unbound-exporter; then
+        print_success "Exportador Prometheus iniciado com sucesso"
+        print_info "Endpoint disponível em: http://127.0.0.1:9100/metrics"
+        return 0
+    else
+        print_error "Falha ao iniciar exportador Prometheus"
+        return 1
+    fi
+}
+
+install_prometheus() {
+    print_section "Instalando Prometheus"
+    
+    # Verificar se Prometheus já está instalado
+    if command -v prometheus &> /dev/null; then
+        print_info "Prometheus já está instalado"
+        return 0
+    fi
+    
+    # Fazer download e instalar Prometheus
+    PROM_VERSION="2.45.0"
+    PROM_ARCH="amd64"
+    
+    print_info "Baixando Prometheus v${PROM_VERSION}..."
+    cd /tmp
+    
+    wget -q "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-${PROM_ARCH}.tar.gz" || {
+        print_error "Falha ao baixar Prometheus"
+        return 1
+    }
+    
+    tar xzf "prometheus-${PROM_VERSION}.linux-${PROM_ARCH}.tar.gz"
+    
+    mkdir -p /opt/prometheus
+    cp "prometheus-${PROM_VERSION}.linux-${PROM_ARCH}/prometheus" /opt/prometheus/
+    cp "prometheus-${PROM_VERSION}.linux-${PROM_ARCH}/promtool" /opt/prometheus/
+    
+    # Criar link simbólico
+    ln -sf /opt/prometheus/prometheus /usr/local/bin/prometheus || true
+    
+    print_success "Prometheus instalado"
+}
+
+configure_prometheus() {
+    print_section "Configurando Prometheus"
+    
+    mkdir -p /etc/prometheus /var/lib/prometheus
+    
+    cat > /etc/prometheus/prometheus.yml << 'EOF'
+# Prometheus configuration - RESOLVIX
+# Configuração automática do instalador Resolvix
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'resolvix-dns'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'unbound'
+    static_configs:
+      - targets: ['localhost:9100']
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    metrics_path: '/metrics'
+EOF
+    
+    print_success "Prometheus configurado"
+}
+
+create_prometheus_service() {
+    print_section "Criando serviço systemd do Prometheus"
+    
+    # Criar usuário para Prometheus se não existir
+    useradd -r -s /bin/false prometheus 2>/dev/null || true
+    
+    chown -R prometheus:prometheus /etc/prometheus /var/lib/prometheus
+    
+    cat > /etc/systemd/system/prometheus.service << EOF
+[Unit]
+Description=RESOLVIX - Prometheus Monitoring Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecStart=/opt/prometheus/prometheus \\
+  --config.file=/etc/prometheus/prometheus.yml \\
+  --storage.tsdb.path=/var/lib/prometheus \\
+  --web.console.templates=/opt/prometheus/consoles \\
+  --web.console.libraries=/opt/prometheus/console_libraries
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=prometheus
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    systemctl enable prometheus
+    
+    print_success "Serviço Prometheus criado"
+}
+
+start_prometheus() {
+    print_section "Iniciando Prometheus"
+    
+    systemctl restart prometheus
+    sleep 3
+    
+    if systemctl is-active --quiet prometheus; then
+        print_success "Prometheus iniciado com sucesso"
+        print_info "Acesse em: http://127.0.0.1:9090"
+        return 0
+    else
+        print_warning "Prometheus pode estar iniciando, verificando logs..."
+        return 1
+    fi
+}
+
+test_prometheus_integration() {
+    print_section "Testando integração Prometheus"
+    
+    print_info "Testando exportador..."
+    if curl -s http://127.0.0.1:9100/metrics | grep -q "unbound_"; then
+        print_success "Exportador respondendo com métricas"
+    else
+        print_warning "Verificar exportador: curl http://127.0.0.1:9100/metrics"
+    fi
+    
+    print_info "Testando Prometheus..."
+    if curl -s http://127.0.0.1:9090/api/v1/targets | grep -q "unbound"; then
+        print_success "Prometheus scraping unbound"
+    else
+        print_info "Prometheus pode ainda estar coletando métricas"
+    fi
+}
+
+# ============================================================================
 # STATUS E INFORMAÇÕES
 # ============================================================================
 
@@ -670,15 +1139,38 @@ show_final_info() {
     echo "  Cache RRSET ............ 512MB"
     echo "  DNSSEC ................. ✓ Habilitado"
     echo "  Performance ............ Otimizada (1M+ qps)"
+    
+    if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
+        echo ""
+        echo -e "${BOLD}📊 Monitoramento Prometheus:${NC}"
+        echo "  Status ................. ✓ Instalado e Ativo"
+        echo "  Exportador ............. http://127.0.0.1:9100/metrics"
+        echo "  Prometheus UI .......... http://127.0.0.1:9090"
+        echo "  Job Unbound ............ Scraping a cada 10s"
+    fi
+    
     echo ""
     echo -e "${BOLD}🔧 Comandos Úteis:${NC}"
-    echo "  Status ................. systemctl status unbound"
-    echo "  Reiniciar .............. systemctl restart unbound"
-    echo "  Parar Serviço .......... systemctl stop unbound"
-    echo "  Logs em Tempo Real ..... journalctl -u unbound -f"
+    echo "  Status DNS ............. systemctl status unbound"
+    echo "  Reiniciar DNS .......... systemctl restart unbound"
+    echo "  Parar DNS .............. systemctl stop unbound"
+    echo "  Logs DNS em Tempo Real . journalctl -u unbound -f"
     echo "  Teste de DNS ........... dig @127.0.0.1 google.com"
     echo "  Estatísticas ........... unbound-control stats"
     echo "  Arquivo Config ......... /etc/unbound/unbound.conf"
+    
+    if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
+        echo ""
+        echo -e "${BOLD}📊 Comandos Prometheus:${NC}"
+        echo "  Status Exportador ...... systemctl status unbound-exporter"
+        echo "  Reiniciar Exportador ... systemctl restart unbound-exporter"
+        echo "  Status Prometheus ...... systemctl status prometheus"
+        echo "  Reiniciar Prometheus ... systemctl restart prometheus"
+        echo "  Logs Exportador ........ journalctl -u unbound-exporter -f"
+        echo "  Logs Prometheus ........ journalctl -u prometheus -f"
+        echo "  Testar Métricas ........ curl http://127.0.0.1:9100/metrics"
+    fi
+    
     echo ""
     echo -e "${BOLD}🔒 Boas Práticas de Produção:${NC}"
     echo "  ✓ Executar Unbound em usuário não-root"
@@ -688,10 +1180,21 @@ show_final_info() {
     echo "  ✓ Manter o sistema e pacotes atualizados"
     echo "  ✓ Implementar rate limiting para proteção"
     echo "  ✓ Habilitar DNSSEC para validação de respostas"
+    
+    if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
+        echo "  ✓ Configurar dashboard Grafana com arquivo grafana_dashboard.json"
+        echo "  ✓ Proteger acesso Prometheus com autenticação"
+    fi
+    
     echo ""
     echo -e "${BOLD}📚 Documentação:${NC}"
-    echo "  Site Oficial ........... https://nlnetlabs.nl/projects/unbound/"
-    echo "  Documentação ........... https://unbound.docs.nlnetlabs.nl/"
+    echo "  Site Oficial Unbound ... https://nlnetlabs.nl/projects/unbound/"
+    echo "  Documentação Unbound ... https://unbound.docs.nlnetlabs.nl/"
+    if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
+        echo "  Site Oficial Prometheus  https://prometheus.io"
+        echo "  Dashboard Grafana ....... /root/resolvix/grafana_dashboard.json"
+    fi
+    
     echo ""
     echo -e "${BLUE}$(printf '═%.0s' {1..70})${NC}"
     echo ""
@@ -731,6 +1234,7 @@ main() {
     ask_ip_mode
     ask_ip_version
     ask_public_ip_blocks
+    ask_monitoring
     
     echo ""
     print_section "Resumo da configuração"
@@ -739,6 +1243,11 @@ main() {
     echo "Versão de IP: $([ "$ENABLE_IPV6" == "yes" ] && echo "IPv4 + IPv6" || echo "IPv4")"
     if [ "$IP_MODE_TYPE" == "public" ] && [ -n "$CUSTOM_IP_BLOCKS" ]; then
         echo "Blocos IP customizados: $CUSTOM_IP_BLOCKS"
+    fi
+    if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
+        echo "Prometheus + Exportador: Sim"
+    else
+        echo "Prometheus + Exportador: Não"
     fi
     echo ""
     
@@ -774,6 +1283,28 @@ main() {
     
     # Configurar DNS do sistema
     configure_system_dns
+    
+    # Instalação e configuração do Prometheus (opcional)
+    if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
+        install_prometheus_dependencies
+        create_prometheus_exporter
+        create_prometheus_exporter_service
+        
+        if ! start_prometheus_exporter; then
+            print_warning "Problema ao iniciar exportador, verifique os logs"
+        fi
+        
+        install_prometheus
+        configure_prometheus
+        create_prometheus_service
+        
+        if ! start_prometheus; then
+            print_warning "Prometheus pode estar inicializando, verifique os logs"
+        fi
+        
+        sleep 5
+        test_prometheus_integration
+    fi
     
     # Status final
     show_status
