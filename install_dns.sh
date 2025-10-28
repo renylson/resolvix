@@ -606,22 +606,63 @@ test_performance() {
 # ============================================================================
 
 configure_system_dns() {
-    print_section "Configurando DNS do sistema"
+    print_section "Configurando DNS do sistema para usar Unbound"
+    
+    print_info "Removendo proteção anterior de /etc/resolv.conf..."
+    chattr -i /etc/resolv.conf 2>/dev/null || true
     
     # Criar/atualizar /etc/resolv.conf com nosso servidor
+    print_info "Configurando nameserver IPv4 (127.0.0.1)..."
     cat > /etc/resolv.conf << EOF
 # Configurado automaticamente pelo RESOLVIX
 nameserver 127.0.0.1
 EOF
     
     if [ "$ENABLE_IPV6" == "yes" ] && [ -n "$IPV6_ADDR" ]; then
+        print_info "Configurando nameserver IPv6 (::1)..."
         echo "nameserver ::1" >> /etc/resolv.conf
     fi
     
+    # Adicionar fallback
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+    
     # Proteger contra sobrescrita
+    print_info "Protegendo /etc/resolv.conf contra sobrescrita..."
     chattr +i /etc/resolv.conf 2>/dev/null || true
     
     print_success "DNS do sistema configurado para usar Unbound"
+    print_info "Nameservers configurados:"
+    grep "^nameserver" /etc/resolv.conf
+}
+
+verify_dns_configuration() {
+    print_section "Verificando configuração de DNS do sistema"
+    
+    print_info "Testando resolução com novo DNS..."
+    
+    # Testar com localhost IPv4
+    if dig @127.0.0.1 google.com +short &> /dev/null; then
+        print_success "Resolução via IPv4 (127.0.0.1) funcionando"
+    else
+        print_error "Falha na resolução via IPv4"
+    fi
+    
+    # Testar com localhost IPv6 se habilitado
+    if [ "$ENABLE_IPV6" == "yes" ]; then
+        if dig @::1 google.com +short &> /dev/null; then
+            print_success "Resolução via IPv6 (::1) funcionando"
+        else
+            print_warning "Falha na resolução via IPv6"
+        fi
+    fi
+    
+    # Testar resolução padrão do sistema
+    if nslookup google.com 127.0.0.1 &> /dev/null; then
+        print_success "Sistema usando Unbound como DNS padrão"
+    else
+        print_warning "Sistema pode não estar usando Unbound corretamente"
+    fi
 }
 
 # ============================================================================
@@ -1283,6 +1324,9 @@ main() {
     
     # Configurar DNS do sistema
     configure_system_dns
+    
+    # Verificar configuração de DNS
+    verify_dns_configuration
     
     # Instalação e configuração do Prometheus (opcional)
     if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
