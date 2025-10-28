@@ -635,19 +635,19 @@ configure_system_dns() {
     print_info "Removendo proteção anterior de /etc/resolv.conf..."
     chattr -i /etc/resolv.conf 2>/dev/null || true
     
-    print_info "Limpando /etc/resolv.conf..."
-    > /etc/resolv.conf
-    
-    print_info "Configurando nameserver IPv4 (127.0.0.1)..."
-    cat > /etc/resolv.conf << 'EOF'
-# Configurado automaticamente pelo RESOLVIX
-# DNS Recursivo - Unbound
-nameserver 127.0.0.1
-EOF
-    
+    print_info "Limpando /etc/resolv.conf (remoção de entradas nameserver existentes usando sed)..."
+
+    # Garantir que o arquivo exista
+    touch /etc/resolv.conf
+
+    # Remover linhas nameserver antigas usando sed
+    sed -i '/^nameserver\s\+/d' /etc/resolv.conf || true
+
+    # Preparar novo cabeçalho e entries (usamos printf + cat para inserir no topo)
     if [ "$ENABLE_IPV6" == "yes" ] && [ -n "$IPV6_ADDR" ]; then
-        print_info "Configurando nameserver IPv6 (::1)..."
-        echo "nameserver ::1" >> /etc/resolv.conf
+        printf '# Configurado automaticamente pelo RESOLVIX\n# DNS Recursivo - Unbound\nnameserver 127.0.0.1\nnameserver ::1\n' | cat - /etc/resolv.conf > /tmp/resolv.conf.$$ && mv /tmp/resolv.conf.$$ /etc/resolv.conf
+    else
+        printf '# Configurado automaticamente pelo RESOLVIX\n# DNS Recursivo - Unbound\nnameserver 127.0.0.1\n' | cat - /etc/resolv.conf > /tmp/resolv.conf.$$ && mv /tmp/resolv.conf.$$ /etc/resolv.conf
     fi
     
     # Aguardar um pouco
@@ -987,47 +987,102 @@ install_prometheus_dependencies() {
 }
 
 create_prometheus_exporter_service() {
-    print_section "Criando serviço systemd do exportador"
+    print_section "Criando serviço systemd do exportador Prometheus"
     
-    cat > /etc/systemd/system/unbound-exporter.service << EOF
+    print_info "Gerando arquivo de serviço..."
+    cat > /etc/systemd/system/unbound-exporter.service << 'EOF'
 [Unit]
 Description=RESOLVIX - Unbound Prometheus Exporter
+Documentation=https://nlnetlabs.nl/projects/unbound/
 After=network-online.target unbound.service
 Wants=network-online.target
+Requires=unbound.service
 
 [Service]
 Type=simple
 User=root
+Group=root
+WorkingDirectory=/opt/resolvix
 ExecStart=/usr/bin/python3 /opt/resolvix/unbound_exporter.py
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Reinicialização automática em caso de falha
 Restart=on-failure
 RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Logging
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=unbound-exporter
+
+# Segurança
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
     
-    systemctl daemon-reload
-    systemctl enable unbound-exporter
+    print_success "Arquivo de serviço criado"
     
-    print_success "Serviço exportador criado"
+    print_info "Recarregando daemon do systemd..."
+    if ! systemctl daemon-reload; then
+        print_error "Falha ao recarregar daemon do systemd"
+        return 1
+    fi
+    
+    print_info "Habilitando serviço no boot..."
+    if ! systemctl enable unbound-exporter; then
+        print_error "Falha ao habilitar serviço no boot"
+        return 1
+    fi
+    
+    print_success "Serviço exportador criado e habilitado"
+    return 0
 }
 
 start_prometheus_exporter() {
-    print_section "Iniciando exportador Prometheus"
+    print_section "Iniciando serviço do exportador Prometheus"
     
-    systemctl restart unbound-exporter
-    sleep 2
+    print_info "Iniciando unbound-exporter via systemctl..."
+    if ! systemctl restart unbound-exporter 2>/dev/null; then
+        print_error "Falha ao executar systemctl restart"
+        journalctl -u unbound-exporter -n 5 --no-pager 2>/dev/null || true
+        return 1
+    fi
     
-    if systemctl is-active --quiet unbound-exporter; then
-        print_success "Exportador Prometheus iniciado com sucesso"
-        print_info "Endpoint disponível em: http://127.0.0.1:9100/metrics"
+    # Aguardar inicialização
+    sleep 3
+    
+    print_info "Verificando status do serviço..."
+    if ! systemctl is-active --quiet unbound-exporter; then
+        print_error "Serviço unbound-exporter não está ativo"
+        print_info "Logs do serviço:"
+        journalctl -u unbound-exporter -n 10 --no-pager
+        return 1
+    fi
+    
+    print_success "Serviço unbound-exporter está ativo"
+    
+    # Verificar se porta 9100 está respondendo
+    print_info "Testando endpoint HTTP..."
+    if timeout 5 curl -s http://127.0.0.1:9100/health &>/dev/null; then
+        print_success "Exportador respondendo em http://127.0.0.1:9100"
         return 0
     else
-        print_error "Falha ao iniciar exportador Prometheus"
-        return 1
+        print_warning "Endpoint HTTP não respondeu em tempo"
+        sleep 2
+        if curl -s http://127.0.0.1:9100/health &>/dev/null; then
+            print_success "Exportador respondendo após retry"
+            return 0
+        else
+            print_error "Exportador não responde em http://127.0.0.1:9100"
+            return 1
+        fi
     fi
 }
 
@@ -1388,20 +1443,33 @@ main() {
     
     # Instalação e configuração do Prometheus (opcional)
     if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
+        print_section "Iniciando instalação do Prometheus"
+        
         install_prometheus_dependencies
         create_prometheus_exporter
-        create_prometheus_exporter_service
         
-        if ! start_prometheus_exporter; then
-            print_warning "Problema ao iniciar exportador, verifique os logs"
+        print_info "Criando serviço do exportador..."
+        if ! create_prometheus_exporter_service; then
+            print_error "Falha ao criar serviço do exportador"
+        else
+            print_info "Iniciando serviço do exportador..."
+            if ! start_prometheus_exporter; then
+                print_warning "Problema ao iniciar exportador, verifique os logs com: journalctl -u unbound-exporter -f"
+            fi
         fi
         
-        install_prometheus
-        configure_prometheus
-        create_prometheus_service
+        print_info "Instalando Prometheus..."
+        install_prometheus || print_warning "Falha ao instalar Prometheus"
         
+        print_info "Configurando Prometheus..."
+        configure_prometheus || print_warning "Falha ao configurar Prometheus"
+        
+        print_info "Criando serviço do Prometheus..."
+        create_prometheus_service || print_warning "Falha ao criar serviço do Prometheus"
+        
+        print_info "Iniciando Prometheus..."
         if ! start_prometheus; then
-            print_warning "Prometheus pode estar inicializando, verifique os logs"
+            print_warning "Prometheus pode estar inicializando, verifique com: systemctl status prometheus"
         fi
         
         sleep 5
