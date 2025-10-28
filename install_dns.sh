@@ -608,13 +608,21 @@ test_performance() {
 configure_system_dns() {
     print_section "Configurando DNS do sistema para usar Unbound"
     
+    print_info "Parando systemd-resolved..."
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+    
     print_info "Removendo proteção anterior de /etc/resolv.conf..."
     chattr -i /etc/resolv.conf 2>/dev/null || true
     
-    # Criar/atualizar /etc/resolv.conf com nosso servidor
+    print_info "Aguardando liberação de porta 53..."
+    sleep 3
+    
+    # Criar /etc/resolv.conf com nosso servidor
     print_info "Configurando nameserver IPv4 (127.0.0.1)..."
     cat > /etc/resolv.conf << EOF
 # Configurado automaticamente pelo RESOLVIX
+# DNS Recursivo - Unbound
 nameserver 127.0.0.1
 EOF
     
@@ -628,17 +636,22 @@ EOF
     chattr +i /etc/resolv.conf 2>/dev/null || true
     
     print_success "DNS do sistema configurado para usar Unbound"
+    echo ""
     print_info "Nameservers configurados:"
-    grep "^nameserver" /etc/resolv.conf
+    cat /etc/resolv.conf | grep "^nameserver"
 }
 
 verify_dns_configuration() {
     print_section "Verificando configuração de DNS do sistema"
     
+    print_info "Aguardando Unbound estar pronto..."
+    sleep 3
+    
     print_info "Testando resolução com novo DNS..."
     
     # Testar com localhost IPv4
-    if dig @127.0.0.1 google.com +short &> /dev/null; then
+    print_info "Testando resolução via IPv4 (127.0.0.1)..."
+    if dig @127.0.0.1 +short google.com A 2>/dev/null | grep -q "\."; then
         print_success "Resolução via IPv4 (127.0.0.1) funcionando"
     else
         print_error "Falha na resolução via IPv4"
@@ -646,7 +659,8 @@ verify_dns_configuration() {
     
     # Testar com localhost IPv6 se habilitado
     if [ "$ENABLE_IPV6" == "yes" ]; then
-        if dig @::1 google.com +short &> /dev/null; then
+        print_info "Testando resolução via IPv6 (::1)..."
+        if dig @::1 +short google.com A 2>/dev/null | grep -q "\."; then
             print_success "Resolução via IPv6 (::1) funcionando"
         else
             print_warning "Falha na resolução via IPv6"
@@ -654,11 +668,17 @@ verify_dns_configuration() {
     fi
     
     # Testar resolução padrão do sistema
-    if nslookup google.com 127.0.0.1 &> /dev/null; then
+    print_info "Testando resolução padrão do sistema..."
+    if nslookup google.com 127.0.0.1 2>/dev/null | grep -q "Address"; then
         print_success "Sistema usando Unbound como DNS padrão"
     else
         print_warning "Sistema pode não estar usando Unbound corretamente"
     fi
+    
+    # Verificar conteúdo de /etc/resolv.conf
+    echo ""
+    print_info "Conteúdo atual de /etc/resolv.conf:"
+    cat /etc/resolv.conf
 }
 
 # ============================================================================
