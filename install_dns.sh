@@ -623,10 +623,6 @@ EOF
         echo "nameserver ::1" >> /etc/resolv.conf
     fi
     
-    # Adicionar fallback
-    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
-    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-    
     # Proteger contra sobrescrita
     print_info "Protegendo /etc/resolv.conf contra sobrescrita..."
     chattr +i /etc/resolv.conf 2>/dev/null || true
