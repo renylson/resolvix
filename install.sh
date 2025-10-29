@@ -470,6 +470,7 @@ generate_unbound_config() {
 # - Configuração segura e robusta
 # ============================================================================
 
+
 server:
     interface: 0.0.0.0
 EOF
@@ -478,17 +479,20 @@ EOF
         echo "    interface: ::0" >> /etc/unbound/unbound.conf
     fi
     
-    cat >> /etc/unbound/unbound.conf << EOF
-    port: 53
-EOF
-    
-    # Adicionar regras de access control
-    generate_access_control >> /etc/unbound/unbound.conf
-    
-    cat >> /etc/unbound/unbound.conf << 'EOF'
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    verbosity: 1
-    num-threads: 16
+    cat > /etc/unbound/unbound.conf << 'EOF'
+# ============================================================================
+# RESOLVIX - DNS Recursivo de Alta Performance
+# Gerado automaticamente pelo instalador
+# - Consulta direta aos root servers (sem forwarders)
+# - DNSSEC habilitado
+# - Otimizado para milhões de requisições por segundo
+# - Configuração segura e robusta
+# ============================================================================
+
+server:
+    statistics-interval: 0
+    extended-statistics: yes
+    statistics-cumulative: yes
     so-rcvbuf: 16m
     so-sndbuf: 16m
     msg-cache-size: 512m
@@ -900,19 +904,47 @@ class UnboundMetrics:
         return metrics
     
     def get_metrics(self):
-        """Obtém todas as métricas"""
+        """Obtém todas as métricas, agregando por thread"""
         current_time = time.time()
-        
-        # Usar cache se ainda válido
         if current_time - self.last_update < self.cache_ttl:
             return self.metrics
-        
-        # Coletar estatísticas
         stats = self.execute_unbound_control('stats')
         if stats:
-            self.metrics = self.parse_stats(stats)
+            raw = self.parse_stats(stats)
+            # Agregação de métricas por thread
+            totals = {}
+            thread_prefixes = set()
+            for k in raw:
+                m = re.match(r'thread(\d+)\.(.+)', k)
+                if m:
+                    thread_prefixes.add(m.group(2))
+            for metric in thread_prefixes:
+                total = 0
+                for k, v in raw.items():
+                    if k.endswith(metric):
+                        try:
+                            total += float(v)
+                        except Exception:
+                            pass
+                totals[metric] = total
+            # Mapear nomes agregados para o dashboard
+            mapping = {
+                'num_queries': 'unbound_total_queries',
+                'num_cachehits': 'unbound_total_cached_queries',
+                'num_recursivereplies': 'unbound_total_recursion_queries',
+                'num_prefetch': 'unbound_total_prefetch',
+                'num_queries_timed_out': 'unbound_total_recursion_time_timeouts',
+                'num_dnssec_queries': 'unbound_total_dnssec_queries',
+                'num_dnssec_bogus': 'unbound_total_dnssec_bogus',
+                'requestlist_current': 'unbound_total_requestlist_current_all',
+                'requestlist_overwritten': 'unbound_total_requestlist_overwritten',
+                'num_cachemiss': 'unbound_total_cachemiss',
+            }
+            for k, v in mapping.items():
+                if k in totals:
+                    raw[v] = totals[k]
+            self.metrics = raw
             self.last_update = current_time
-        
         return self.metrics
     
     def format_prometheus(self):
@@ -1363,6 +1395,123 @@ test_prometheus_integration() {
 }
 
 # ============================================================================
+# DASHBOARD WEB
+# ============================================================================
+
+create_dashboard_service() {
+    print_section "Criando serviço Web Dashboard"
+    
+    # Tornar script executável
+    if [ -f /root/resolvix/dashboard-server.py ]; then
+        chmod +x /root/resolvix/dashboard-server.py
+        print_success "Script do dashboard configurado"
+    fi
+    
+    # Criar serviço systemd
+    cat > /etc/systemd/system/resolvix-dashboard.service << 'EOF'
+[Unit]
+Description=RESOLVIX - Web Dashboard Server
+Documentation=https://nlnetlabs.nl/projects/unbound/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/resolvix
+ExecStart=/usr/bin/python3 /root/resolvix/dashboard-server.py --host 0.0.0.0 --port 8080
+
+# Reinicialização automática em caso de falha
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=resolvix-dashboard
+
+# Segurança
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    print_success "Arquivo de serviço criado"
+    
+    print_info "Recarregando daemon do systemd..."
+    if ! systemctl daemon-reload; then
+        print_error "Falha ao recarregar daemon do systemd"
+        return 1
+    fi
+    
+    print_info "Habilitando serviço no boot..."
+    if ! systemctl enable resolvix-dashboard; then
+        print_error "Falha ao habilitar serviço no boot"
+        return 1
+    fi
+    
+    print_success "Serviço Web Dashboard criado e habilitado"
+    return 0
+}
+
+start_dashboard_service() {
+    print_section "Iniciando serviço Web Dashboard"
+    
+    print_info "Iniciando resolvix-dashboard via systemctl..."
+    if ! systemctl restart resolvix-dashboard 2>/dev/null; then
+        print_error "Falha ao executar systemctl restart"
+        journalctl -u resolvix-dashboard -n 5 --no-pager 2>/dev/null || true
+        return 0
+    fi
+    
+    # Aguardar inicialização
+    sleep 2
+    
+    print_info "Verificando status do serviço..."
+    if ! systemctl is-active --quiet resolvix-dashboard; then
+        print_warning "Serviço resolvix-dashboard pode estar inicializando"
+        journalctl -u resolvix-dashboard -n 5 --no-pager 2>/dev/null || true
+        return 0
+    fi
+    
+    print_success "Serviço resolvix-dashboard está ativo"
+    
+    # Verificar se porta 8080 está respondendo
+    print_info "Testando endpoint HTTP..."
+    if timeout 5 curl -s http://127.0.0.1:8080/health &>/dev/null; then
+        print_success "Dashboard respondendo em http://127.0.0.1:8080"
+        print_info "Acessível em:"
+        print_info "  - IPv4: http://${IPV4_ADDR}:8080/dashboard"
+        if [ -n "$IPV6_ADDR" ]; then
+            print_info "  - IPv6: http://[${IPV6_ADDR}]:8080/dashboard"
+        fi
+        print_info "  - Localhost: http://127.0.0.1:8080/dashboard"
+        return 0
+    else
+        print_warning "Dashboard pode estar inicializando"
+        sleep 2
+        if timeout 5 curl -s http://127.0.0.1:8080/health &>/dev/null; then
+            print_success "Dashboard respondendo após retry"
+            print_info "Acessível em:"
+            print_info "  - IPv4: http://${IPV4_ADDR}:8080/dashboard"
+            if [ -n "$IPV6_ADDR" ]; then
+                print_info "  - IPv6: http://[${IPV6_ADDR}]:8080/dashboard"
+            fi
+            print_info "  - Localhost: http://127.0.0.1:8080/dashboard"
+            return 0
+        else
+            print_warning "Dashboard pode estar em inicialização, verifique com: journalctl -u resolvix-dashboard -f"
+            return 0
+        fi
+    fi
+}
+
+# ============================================================================
 # STATUS E INFORMAÇÕES
 # ============================================================================
 
@@ -1424,23 +1573,38 @@ show_final_info() {
     echo "  Performance ............ Otimizada (1M+ qps)"
     
     if [ "$INSTALL_PROMETHEUS" == "yes" ]; then
-        echo ""
-        echo -e "${BOLD}📊 Monitoramento Prometheus:${NC}"
-        echo "  Status ................. ✓ Instalado e Ativo"
-        echo "  Exportador ............. http://127.0.0.1:9100/metrics"
-        echo "  Exportador (IPv4) ...... http://${IPV4_ADDR}:9100/metrics"
-        if [ -n "$IPV6_ADDR" ]; then
-            echo "  Exportador (IPv6) ...... http://[${IPV6_ADDR}]:9100/metrics"
-        fi
-        echo "  Prometheus UI .......... http://127.0.0.1:9090"
-        echo "  Prometheus (IPv4) ...... http://${IPV4_ADDR}:9090"
-        if [ -n "$IPV6_ADDR" ]; then
-            echo "  Prometheus (IPv6) ...... http://[${IPV6_ADDR}]:9090"
-        fi
-        echo "  Job Unbound ............ Scraping a cada 10s"
+    echo ""
+    echo -e "${BOLD}📊 Monitoramento Prometheus:${NC}"
+    echo "  Status ................. ✓ Instalado e Ativo"
+    echo "  Exportador ............. http://127.0.0.1:9100/metrics"
+    echo "  Exportador (IPv4) ...... http://${IPV4_ADDR}:9100/metrics"
+    if [ -n "$IPV6_ADDR" ]; then
+        echo "  Exportador (IPv6) ...... http://[${IPV6_ADDR}]:9100/metrics"
+    fi
+    echo "  Prometheus UI .......... http://127.0.0.1:9090"
+    echo "  Prometheus (IPv4) ...... http://${IPV4_ADDR}:9090"
+    if [ -n "$IPV6_ADDR" ]; then
+        echo "  Prometheus (IPv6) ...... http://[${IPV6_ADDR}]:9090"
+    fi
+    echo "  Job Unbound ............ Scraping a cada 10s"
     fi
     
     echo ""
+    echo -e "${BOLD}🎨 Web Dashboard:${NC}"
+    echo "  Status ................. ✓ Instalado e Ativo"
+    echo "  Dashboard .............. http://127.0.0.1:8080/dashboard"
+    echo "  Dashboard (IPv4) ....... http://${IPV4_ADDR}:8080/dashboard"
+    if [ -n "$IPV6_ADDR" ]; then
+        echo "  Dashboard (IPv6) ....... http://[${IPV6_ADDR}]:8080/dashboard"
+    fi
+    echo "  API Métricas ........... http://127.0.0.1:8080/metrics"
+    echo "  Health Check ........... http://127.0.0.1:8080/health"
+    echo "  Características:"
+    echo "    ✓ Mobile-first responsivo"
+    echo "    ✓ Dark mode profissional"
+    echo "    ✓ Gráficos em tempo real"
+    echo "    ✓ Exportar dados (JSON)"
+    echo "    ✓ Sem dependências JavaScript"    echo ""
     echo -e "${BOLD}🔧 Comandos Úteis:${NC}"
     echo "  Status DNS ............. systemctl status unbound"
     echo "  Reiniciar DNS .......... systemctl restart unbound"
@@ -1464,6 +1628,17 @@ show_final_info() {
         if [ -n "$IPV6_ADDR" ]; then
             echo "  Testar Métricas (IPv6)  curl http://[${IPV6_ADDR}]:9100/metrics"
         fi
+    fi
+    
+    echo ""
+    echo -e "${BOLD}🎨 Comandos Web Dashboard:${NC}"
+    echo "  Status Dashboard ....... systemctl status resolvix-dashboard"
+    echo "  Reiniciar Dashboard .... systemctl restart resolvix-dashboard"
+    echo "  Logs Dashboard ......... journalctl -u resolvix-dashboard -f"
+    echo "  Testar Dashboard (IPv4)  curl http://127.0.0.1:8080/health"
+    echo "  Testar Dashboard IP .... curl http://${IPV4_ADDR}:8080/health"
+    if [ -n "$IPV6_ADDR" ]; then
+        echo "  Testar Dashboard (IPv6)  curl http://[${IPV6_ADDR}]:8080/health"
     fi
     
     echo ""
@@ -1611,6 +1786,15 @@ main() {
         test_prometheus_integration || true
     fi
     
+    # Instalação e configuração do Dashboard Web
+    print_section "Configurando Web Dashboard"
+    
+    print_info "Criando serviço do dashboard..."
+    create_dashboard_service || print_warning "Falha ao criar serviço do dashboard"
+    
+    print_info "Iniciando serviço do dashboard..."
+    start_dashboard_service || true
+    
     # ÚLTIMA AÇÃO: Garantir que o DNS está correto
     print_section "Etapa Final: Validação e Configuração Definitiva de DNS"
     print_info "Executando última configuração de DNS..."
@@ -1634,5 +1818,18 @@ main() {
 # ============================================================================
 
 if [ "${BASH_SOURCE[0]}" == "${0}" ]; then
+    # Otimização automática de buffers para Unbound
+    print_section "Otimização de buffers do sistema para Unbound"
+    SYSCTL_FILE="/etc/sysctl.conf"
+    if ! grep -q 'net.core.rmem_max=16777216' "$SYSCTL_FILE" 2>/dev/null; then
+        echo 'net.core.rmem_max=16777216' >> "$SYSCTL_FILE"
+        print_info "Adicionado net.core.rmem_max=16777216 ao $SYSCTL_FILE"
+    fi
+    if ! grep -q 'net.core.wmem_max=16777216' "$SYSCTL_FILE" 2>/dev/null; then
+        echo 'net.core.wmem_max=16777216' >> "$SYSCTL_FILE"
+        print_info "Adicionado net.core.wmem_max=16777216 ao $SYSCTL_FILE"
+    fi
+    sysctl -p >/dev/null 2>&1 && print_success "Buffers otimizados e aplicados com sucesso" || print_warning "Não foi possível aplicar sysctl -p automaticamente, aplique manualmente se necessário."
+
     main "$@"
 fi

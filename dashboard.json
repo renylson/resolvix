@@ -1079,38 +1079,30 @@
   "templating": {
     "list": [
       {
-        "allValue": null,
         "current": {
           "selected": false,
           "text": "Prometheus",
           "value": "prometheus"
         },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(unbound_queries_total, job)",
-        "description": null,
-        "error": null,
-        "filters": [],
         "hide": 0,
         "includeAll": false,
         "label": "Datasource Prometheus",
         "multi": false,
         "name": "datasource",
-        "options": [],
-        "query": {
-          "params": [],
-          "text": "prometheus"
-        },
+        "options": [
+          {
+            "selected": true,
+            "text": "Prometheus",
+            "value": "prometheus"
+          }
+        ],
+        "query": "prometheus",
+        "queryValue": "",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
-        "type": "datasource",
-        "tagValuesQuery": "",
-        "tagsQuery": "",
-        "useTags": false
+        "type": "datasource"
       }
     ]
   },
