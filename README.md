@@ -27,14 +27,14 @@ DNS Recursivo profissional baseado em Unbound com Prometheus para monitoramento.
 
 ```bash
 cd /root/resolvix
-sudo bash install_dns.sh
+sudo bash install.sh
 ```
 
 ### Modo Automático (sem perguntas)
 
 ```bash
 cd /root/resolvix
-echo -e "s\n2\n2\n\ns\ns" | sudo bash install_dns.sh
+echo -e "s\n2\n2\n\ns\ns" | sudo bash install.sh
 ```
 
 **Opções padrão automáticas:**
