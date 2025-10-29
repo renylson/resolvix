@@ -75,10 +75,16 @@ confirm_action() {
     local prompt="$1"
     local response
     
+    # Se stdin não é um terminal, usar padrão "sim"
+    if [ ! -t 0 ]; then
+        echo -e "${YELLOW}${BOLD}${prompt} [s/n]: s${NC}"
+        return 0
+    fi
+    
     while true; do
         read -p "$(echo -e ${YELLOW}${BOLD}$prompt' [s/n]: '${NC})" response
         case "$response" in
-            [sS]|[yY]|sim|yes)
+            [sS]|[yY]|sim|yes|"")
                 return 0
                 ;;
             [nN]|não|no)
@@ -232,6 +238,13 @@ ask_ip_mode() {
     echo "2) IP Público  - Aceitar apenas IPs privados e blocos específicos"
     echo ""
     
+    # Se stdin não é um terminal, usar padrão "IP Público"
+    if [ ! -t 0 ]; then
+        IP_MODE_TYPE="public"
+        print_success "Modo Público selecionado (entrada automática)"
+        return
+    fi
+    
     while true; do
         read -p "Escolha uma opção (1 ou 2): " IP_MODE
         case "$IP_MODE" in
@@ -259,6 +272,14 @@ ask_ip_version() {
     echo "1) IPv4 apenas"
     echo "2) IPv4 + IPv6"
     echo ""
+    
+    # Se stdin não é um terminal, usar padrão "IPv4 + IPv6"
+    if [ ! -t 0 ]; then
+        IP_VERSION_TYPE="both"
+        ENABLE_IPV6="yes"
+        print_success "IPv4 + IPv6 selecionado (entrada automática)"
+        return
+    fi
     
     while true; do
         read -p "Escolha uma opção (1 ou 2): " IP_VERSION
@@ -290,17 +311,27 @@ ask_public_ip_blocks() {
     fi
     
     echo -e "Digite os blocos de IP que deseja permitir (CIDR)"
-    echo "Por exemplo: 203.0.113.0/24 203.0.114.0/24"
+    echo "Exemplos IPv4: 203.0.113.0/24 203.0.114.0/24"
+    echo "Exemplos IPv6: 2001:db8::/32 2001:db9::/32"
+    echo "Misturado:    203.0.113.0/24 2001:db8::/32"
     echo "Ou pressione Enter para usar apenas IPs privados padrão"
     echo ""
     
-    read -p "Blocos IP (separados por espaço): " CUSTOM_IP_BLOCKS
+    # Se stdin não é um terminal, usar padrão vazio (IPs privados)
+    if [ ! -t 0 ]; then
+        print_info "Usando blocos IP privados padrão (entrada automática)"
+        CUSTOM_IP_BLOCKS=""
+        return
+    fi
+    
+    read -p "Blocos IP (IPv4/IPv6, separados por espaço): " CUSTOM_IP_BLOCKS
     
     if [ -z "$CUSTOM_IP_BLOCKS" ]; then
         print_info "Usando blocos IP privados padrão"
         CUSTOM_IP_BLOCKS=""
     else
         print_success "Blocos customizados: $CUSTOM_IP_BLOCKS"
+        print_info "IPv4 e IPv6 aceitos!"
     fi
 }
 
@@ -308,14 +339,35 @@ ask_monitoring() {
     print_section "Configuração de monitoramento"
     
     echo -e "Deseja instalar e configurar Prometheus com exportador de métricas?\n"
+    echo "1) Sim  - Instalar Prometheus e exportador"
+    echo "2) Não  - Não instalar Prometheus"
+    echo ""
     
-    if confirm_action "Instalar Prometheus e exportador?"; then
+    # Se stdin não é um terminal, usar padrão "Sim"
+    if [ ! -t 0 ]; then
         INSTALL_PROMETHEUS="yes"
-        print_success "Prometheus será instalado"
-    else
-        INSTALL_PROMETHEUS="no"
-        print_info "Prometheus não será instalado"
+        print_success "Prometheus será instalado (entrada automática)"
+        return
     fi
+    
+    while true; do
+        read -p "Escolha uma opção (1 ou 2): " MONITORING_CHOICE
+        case "$MONITORING_CHOICE" in
+            1)
+                INSTALL_PROMETHEUS="yes"
+                print_success "Prometheus será instalado"
+                break
+                ;;
+            2)
+                INSTALL_PROMETHEUS="no"
+                print_info "Prometheus não será instalado"
+                break
+                ;;
+            *)
+                print_error "Opção inválida. Digite 1 ou 2."
+                ;;
+        esac
+    done
 }
 
 # ============================================================================
